@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sic4gridcells"
+version = "0.1.0"
+description = "Plain PyTorch reproduction scaffold for SIC grid cells."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "torch",
+  "numpy",
+  "pyyaml",
+  "tqdm",
+  "tensorboard",
+  "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
