@@ -10,6 +10,7 @@ def test_load_smoke_config() -> None:
     cfg = load_config("configs/smoke.yaml")
     assert cfg.data.batch_size == 4
     assert cfg.data.trajectory_length == 8
+    assert cfg.data.augmentation_mode == "permutation"
     assert cfg.data.initial_position_mode == "zero"
     assert cfg.model.n_units == 16
     assert cfg.model.initial_position_encoding == "none"
@@ -54,6 +55,16 @@ def test_invalid_initial_position_modes_fail(tmp_path: Path) -> None:
         load_config(path)
 
 
+def test_invalid_augmentation_mode_fails(tmp_path: Path) -> None:
+    path = tmp_path / "bad-augmentation.yaml"
+    path.write_text(
+        yaml.safe_dump({"data": {"augmentation_mode": "shuffle_once"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="data.augmentation_mode"):
+        load_config(path)
+
+
 def test_invalid_initial_position_encoder_fails(tmp_path: Path) -> None:
     path = tmp_path / "bad-initial-position-encoder.yaml"
     path.write_text(
@@ -61,6 +72,16 @@ def test_invalid_initial_position_encoder_fails(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="model.initial_position_encoding"):
+        load_config(path)
+
+
+def test_invalid_scheduler_monitor_fails(tmp_path: Path) -> None:
+    path = tmp_path / "bad-scheduler-monitor.yaml"
+    path.write_text(
+        yaml.safe_dump({"train": {"scheduler_monitor": "stats/zero_norm_fraction"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="train.scheduler_monitor"):
         load_config(path)
 
 

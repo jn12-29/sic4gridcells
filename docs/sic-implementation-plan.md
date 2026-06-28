@@ -56,9 +56,8 @@ tests/test_evaluate.py
 ```text
 configs/ablations.yaml
 scripts/run_ablations.py
+docs/runbook.md
 ```
-
-`docs/runbook.md` 可在开始中等规模或 paper-scale 长跑前再补充，目前不是已实现文件。
 
 ## 核心接口与默认决策
 
@@ -75,6 +74,7 @@ scripts/run_ablations.py
 - `data.trajectory_length`: paper 为 `60`。
 - `data.velocity_low`: `-0.15`。
 - `data.velocity_high`: `0.15`。
+- `data.augmentation_mode`: `"permutation"` 或 `"identity"`；默认 `"permutation"`，`"identity"` 仅用于 no-permutation augmentation 消融。
 - `data.initial_position_mode`: `"zero"` 或 `"uniform_box"`；默认 `"zero"` 保持共享原点 baseline。
 - `data.initial_position_low/high`: 仅在 `"uniform_box"` 时用于采样共享 batch 初始位置。
 - `model.n_units`: paper 为 `128`。
@@ -110,6 +110,7 @@ scripts/run_ablations.py
 
 - `sample_base_velocities(cfg, generator, device) -> Tensor[T, 2]`。
 - `sample_permutations(batch_size, trajectory_length, generator, device) -> LongTensor[B, T]`。
+- `sample_velocity_orders(cfg, generator, device) -> LongTensor[B, T]`，根据 `data.augmentation_mode` 生成随机置换或 identity 顺序。
 - `make_sic_batch(cfg, generator, device) -> SicBatch`。
 
 `SicBatch` 字段：
@@ -122,7 +123,7 @@ scripts/run_ablations.py
 
 必须满足：
 
-- 每条置换轨迹包含同一组 base velocities。
+- `permutation` 模式下每条轨迹包含同一组 base velocities 的随机顺序；`identity` 模式下每条轨迹保留同一 base velocity 顺序。
 - 所有轨迹终点一致。
 - `positions[:, t]` 表示执行第 `t` 个 velocity 后的位置。
 - 默认 `data.initial_position_mode: "zero"` 保持共享原点 baseline；`"uniform_box"` 只在配合初始位置编码的实验中使用。
@@ -246,14 +247,16 @@ scripts/run_ablations.py
 
 - `src/sic4gridcells/evaluate.py` 实现 bounded random-walk evaluation trajectory generator、checkpoint reload 和 artifact 写出。
 - `src/sic4gridcells/analysis.py` 最小移植 GridScorer 风格的 ratemap、SAC、grid score 和 grid scale 逻辑。
-- `src/sic4gridcells/plotting.py` 输出 `summary.png`、`ratemaps.pdf` 和 `sacs.pdf`。
+- `src/sic4gridcells/plotting.py` 输出 `summary.png`、`ratemaps.pdf`、`sacs.pdf` 和指标直方图。
 - `scripts/eval_checkpoint.py` 是薄 CLI；训练 config 从 checkpoint 中读取，不另传 `--config`。
 - `ratemaps.npz` 将未访问空间 bin 保存为 `NaN`；访问过但响应为零的 bin 保持 `0.0`。
 - `occupancy.npz` 保存 `occupancy_counts`，是 coverage 指标的 source of truth；访问过的 bin 若出现非有限响应，归类为 invalid response，而不是 coverage gap。
 - `summary.json` 输出 `visited_bins`、`unvisited_bins`、`total_bins`、`coverage_fraction`、`units_without_coverage`、`zero_response_units`、`invalid_response_units` 和 `active_units`。
-- `grid_stats.json/csv` 对每个 unit 输出 `response_status`、`max_abs_response`、`zero_response` 和 `invalid_response`，不再用 `dead_units` 混合 coverage 和 zero response。
+- `grid_stats.json/csv` 对每个 unit 输出 `response_status`、`max_abs_response`、`zero_response`、`invalid_response`、`scale_pixels`、`scale_meters`、`orientation_degrees` 和 `module_id`，不再用 `dead_units` 混合 coverage 和 zero response。
+- `grid_metrics.npz` 保存 per-unit grid score、scale、orientation、peak count 和 module id。
+- `module_summary.csv/json` 汇总 scale-based module clustering；`pairwise_distance_stats.csv/json` 和 `pairwise_distance.png` 汇总 neural distance vs spatial/temporal separation；`fourier_stats.csv/json`、`phase_summary.csv/json`、`state_space_summary.csv/json` 和 `state_space_modules.npz` 输出 preliminary Fourier、phase proxy 和 state-space PCA summaries；`trajectory_stats.json` 记录 evaluation trajectory statistics。
 - SAC/grid score 计算使用 finite ratemap bins 作为 overlap mask，未访问 bin 只在 FFT 数值计算中填 0，不作为 measured zero response。
-- bounded random-walk 的步长按 arena 尺度设定，不随 `--steps` 增加而缩小。
+- bounded random-walk 的步长按 arena 尺度设定，不随 `--steps` 增加而缩小；evaluation seed 默认来自 checkpoint config，也可通过 CLI 指定。
 
 验证：
 
@@ -265,7 +268,7 @@ scripts/run_ablations.py
 验收：
 
 - smoke checkpoint 可 reload。
-- eval 输出 ratemap arrays、occupancy counts、grid stats JSON/CSV、至少一个 PDF 或 PNG。
+- eval 输出 ratemap arrays、occupancy counts、grid stats JSON/CSV、module summary、pairwise neural-distance stats、trajectory stats、至少一个 PDF 或 PNG。
 - 评估代码不读取或生成 supervised target。
 
 ### 阶段 4：中等规模 sanity run
@@ -286,15 +289,15 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/train_sic.py --config configs/me
 
 - 中等规模 run 不 OOM。
 - 至少部分 units 出现空间调谐或周期趋势。
-- metrics 中记录 pair counts 和 zero-norm fraction；throughput、GPU memory 和 dead-unit count 仍属于后续监控增强。
+- metrics 中记录 pair counts 和 zero-norm fraction；throughput、GPU memory 和 coverage/zero/invalid/active response counts 仍属于后续监控增强。
 
 ### 阶段 5：paper config 和消融
 
 当前实现：
 
 - `configs/sic_paper.yaml` 保留 paper-scale 训练参数。
-- `configs/ablations.yaml` 和 `scripts/run_ablations.py` 提供 config-driven ablation orchestration。
-- `no_permutation_augmentation` 已在 ablation config 中声明但禁用，因为当前 data config 尚无关闭 permutation augmentation 的字段。
+- `configs/ablations.yaml` 和 `scripts/run_ablations.py` 提供 config-driven ablation orchestration、可选训练后评估和 aggregate summary。
+- `data.augmentation_mode: identity` 支持 no-permutation augmentation 消融。
 
 验证：
 
@@ -307,7 +310,7 @@ CUDA_VISIBLE_DEVICES=<id> .venv/bin/python scripts/train_sic.py --config configs
 
 - paper config 使用 `B=130`、`T=60`、`N=128`、paper loss weights、`max_optimizer_steps=2000000`。
 - 至少多个 seeds 和小范围 hyperparameter sweep 被记录。
-- 输出 grid-scale histogram、2 m/3 m/4 m ratemaps、pairwise neural-distance plots、state-space analysis。
+- 输出 grid-scale histogram、2 m/3 m/4 m ratemaps、pairwise neural-distance summaries、state-space analysis。
 - 消融覆盖 no capacity、reduced `sigma_g`、no separation、no invariance、no coniso、no permutation augmentation。
 
 ## Review 与质量门
@@ -333,6 +336,6 @@ CUDA_VISIBLE_DEVICES=<id> .venv/bin/python scripts/train_sic.py --config configs
 ## 当前后续顺序
 
 1. 跑中等规模 sanity training，并用 `scripts/eval_checkpoint.py` 评估生成的 checkpoint。
-2. 根据中等规模结果补 module clustering、orientation summaries 和 pairwise neural-distance plots。
-3. 如需复现 paper-scale 结果，先补长跑 runbook、throughput/GPU memory 记录和 checkpoint/evaluation cadence。
-4. 执行 `configs/ablations.yaml` 中已启用的 matched ablations；`no_permutation_augmentation` 需先扩展 data config 后再启用。
+2. 用 `configs/ablations.yaml` 和 `scripts/run_ablations.py` 执行 matched ablations。
+3. 按 `docs/runbook.md` 记录 paper-scale throughput、GPU memory、checkpoint 和 evaluation cadence。
+4. 基于 paper-scale 结果完成 toroidal manifold confirmation 和论文图级 figure selection。

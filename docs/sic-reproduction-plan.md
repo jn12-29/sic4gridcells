@@ -109,7 +109,7 @@ sic4gridcells/
    - 验证：loss terms 有限、checkpoint 可 reload、ratemaps 可生成。
 4. 跑 paper config。
    - `B=130`、`T=60`、`N=128`、论文 loss weights、gradient accumulation 2。
-   - 验证：记录 GPU memory、throughput、dead-unit count 和周期性 checkpoint。
+   - 验证：记录 GPU memory、throughput、coverage/zero/invalid/active response counts 和周期性 checkpoint。
 
 ### 阶段 3：评估与图目标
 
@@ -147,7 +147,7 @@ sic4gridcells/
 验证：
 
 - 所有消融使用同一 evaluation pipeline 和 plots。
-- 保存 summary table：grid-score distribution、detected scale clusters 数量、dead units、代表性 ratemaps。
+- 保存 summary table：grid-score distribution、detected scale clusters 数量、coverage/zero/invalid/active response counts、代表性 ratemaps。
 
 ## 邻近代码复用计划
 
@@ -181,6 +181,6 @@ sic4gridcells/
 ## 当前下一步
 
 1. 运行中等规模 sanity experiment，并用 `scripts/eval_checkpoint.py` 生成 ratemaps、SAC、grid stats 和 figures。
-2. 根据中等规模结果补充 module clustering、orientation summaries、pairwise neural-distance plots 和 long-run runbook。
-3. 用 `configs/ablations.yaml` 和 `scripts/run_ablations.py` 执行 matched ablations；`no_permutation_augmentation` 需要先扩展 data config 后再启用。
-4. 在 paper-scale 长跑前记录 GPU memory、throughput 和 checkpoint/evaluation cadence。
+2. 检查 evaluation 输出的 `module_summary.csv/json`、`grid_metrics.npz`、`pairwise_distance_stats.csv/json`、`pairwise_distance.png`、`fourier_stats.csv/json`、`phase_summary.csv/json`、`state_space_summary.csv/json`、`trajectory_stats.json`、grid-score histogram 和 scale histogram。
+3. 用 `configs/ablations.yaml` 和 `scripts/run_ablations.py` 执行 matched ablations，包括 no permutation augmentation。
+4. 按 `docs/runbook.md` 记录 paper-scale GPU memory、throughput、checkpoint 和 evaluation cadence。

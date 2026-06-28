@@ -30,6 +30,23 @@ def test_grid_scores_and_scales_shapes_are_consistent() -> None:
     scales, peak_counts = scorer.calculate_grid_scales(result.sacs)
     assert scales.shape == (2,)
     assert peak_counts.shape == (2,)
+    metrics = scorer.calculate_grid_metrics(result.sacs)
+    assert metrics.scale_pixels.shape == (2,)
+    assert metrics.orientation_degrees.shape == (2,)
+    assert metrics.peak_counts.shape == (2,)
+
+
+def test_grid_scale_peaks_report_angles_and_distances() -> None:
+    scorer = GridScorer(4, [[-1.0, 1.0], [-1.0, 1.0]])
+    sac = np.zeros((7, 7), dtype=np.float64)
+    sac[3, 5] = 1.0
+    sac[5, 3] = 0.9
+
+    peaks = scorer.grid_scale_peaks(sac, exclude_center_radius=1.0)
+
+    assert peaks.distances.shape == (2,)
+    assert peaks.angles_degrees.shape == (2,)
+    assert np.all(peaks.distances > 1.0)
 
 
 def test_sac_masks_nan_ratemap_bins() -> None:

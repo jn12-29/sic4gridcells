@@ -7,6 +7,7 @@ data:
   trajectory_length: 60
   velocity_low: -0.15
   velocity_high: 0.15
+  augmentation_mode: permutation
 
 model:
   n_units: 128

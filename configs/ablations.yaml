@@ -2,6 +2,17 @@ output_root: results/ablations
 config_dir: results/ablations/configs
 continue_on_error: false
 
+evaluation:
+  enabled: true
+  output_dir_name: eval
+  device: auto
+  arena_sizes: [2.0, 3.0, 4.0]
+  nbins: 32
+  trajectories: 32
+  steps: 256
+  start_mode: origin
+  seed: 0
+
 base:
   seed: 0
   device: auto
@@ -12,6 +23,7 @@ base:
     trajectory_length: 30
     velocity_low: -0.15
     velocity_high: 0.15
+    augmentation_mode: permutation
 
   model:
     n_units: 64
@@ -79,7 +91,7 @@ variants:
         lambda_coniso: 0.0
 
   - name: no_permutation_augmentation
-    description: Declared paper ablation; not runnable until data config supports non-permuted batches.
-    enabled: false
-    reason: Current training config has no field for disabling velocity permutation augmentation.
-    overrides: {}
+    description: Disable velocity permutation augmentation by preserving the base velocity order in every trajectory.
+    overrides:
+      data:
+        augmentation_mode: identity

@@ -1,9 +1,11 @@
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
 import scripts.run_ablations as run_ablations_script
+from sic4gridcells.evaluate import EvaluationResult
 from sic4gridcells.config import load_config
 from sic4gridcells.train import RunResult
 
@@ -39,9 +41,10 @@ def test_repo_ablation_config_materializes_valid_training_configs(tmp_path: Path
         load_config(tmp_path / "configs" / "no_conformal_isometry.yaml").loss.lambda_coniso
         == 0.0
     )
-    skipped = next(run for run in runs if run.name == "no_permutation_augmentation")
-    assert skipped.enabled is False
-    assert skipped.reason
+    no_permutation = next(run for run in runs if run.name == "no_permutation_augmentation")
+    assert no_permutation.enabled is True
+    assert no_permutation.reason is None
+    assert load_config(no_permutation.config_path).data.augmentation_mode == "identity"
 
 
 def test_run_ablations_invokes_train_for_enabled_variants(
@@ -96,6 +99,8 @@ def test_run_ablations_invokes_train_for_enabled_variants(
     assert results["declared_only"].status == "skipped"
     assert results["declared_only"].reason == "not supported by current config schema"
     assert load_config(tmp_path / "configs" / "no_capacity.yaml").loss.lambda_cap == 0.0
+    assert (tmp_path / "runs" / "summary.json").exists()
+    assert (tmp_path / "runs" / "summary.csv").exists()
 
 
 def test_run_ablations_dry_run_validates_without_training(
@@ -125,6 +130,7 @@ def test_run_ablations_dry_run_validates_without_training(
     assert results["baseline"].status == "validated"
     assert results["baseline"].run_result is None
     assert load_config(tmp_path / "configs" / "baseline.yaml").train.max_optimizer_steps == 1
+    assert (tmp_path / "runs" / "summary.json").exists()
 
 
 def test_main_dry_run_does_not_report_validated_runs_as_skipped(
@@ -202,6 +208,74 @@ def test_ablation_override_can_target_defaulted_config_fields(tmp_path: Path) ->
     assert cfg.data.initial_position_high == 0.5
     assert cfg.model.initial_position_encoding == "additive_mlp"
     assert cfg.model.initial_position_hidden_width == 8
+
+
+def test_run_ablations_can_evaluate_and_summarize_finished_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ablation_path = tmp_path / "ablations.yaml"
+    ablation_path.write_text(
+        yaml.safe_dump(
+            {
+                "output_root": str(tmp_path / "runs"),
+                "config_dir": str(tmp_path / "configs"),
+                "evaluation": {
+                    "enabled": True,
+                    "output_dir_name": "eval",
+                    "device": "cpu",
+                    "arena_sizes": [1.0],
+                    "nbins": 4,
+                    "trajectories": 1,
+                    "steps": 2,
+                    "seed": 7,
+                },
+                "base": _tiny_base_config(tmp_path / "base"),
+                "variants": [{"name": "baseline", "overrides": {}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_train(config_path: str | Path) -> RunResult:
+        cfg = load_config(config_path)
+        output_dir = Path(cfg.output_dir)
+        return RunResult(
+            output_dir=output_dir,
+            final_step=1,
+            checkpoint_path=output_dir / "checkpoints" / "step_1.pt",
+        )
+
+    def fake_evaluate_checkpoint(*args, **kwargs) -> EvaluationResult:
+        output_dir = Path(args[1])
+        output_dir.mkdir(parents=True)
+        (output_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "arena_summaries": [
+                        {
+                            "arena_size": 1.0,
+                            "mean_grid_score_60": 0.25,
+                            "mean_scale_meters": 0.5,
+                            "detected_modules": 2,
+                            "active_units": 3,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return EvaluationResult(output_dir=output_dir, checkpoint_path=Path(args[0]), arena_dirs={1.0: output_dir / "arena_1p0"})
+
+    monkeypatch.setattr(run_ablations_script, "train", fake_train)
+    monkeypatch.setattr(run_ablations_script, "evaluate_checkpoint", fake_evaluate_checkpoint)
+
+    results = run_ablations_script.run_ablations(ablation_path)
+
+    assert results["baseline"].evaluation_result is not None
+    summary = yaml.safe_load((tmp_path / "runs" / "summary.json").read_text(encoding="utf-8"))
+    assert summary[0]["evaluation_output_dir"] == str(tmp_path / "runs" / "baseline" / "eval")
+    assert summary[0]["arena_summaries"][0]["detected_modules"] == 2
 
 
 def test_unknown_ablation_override_key_fails(tmp_path: Path) -> None:

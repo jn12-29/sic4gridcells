@@ -44,12 +44,7 @@ def make_sic_batch(
 ) -> SicBatch:
     data_cfg = _data_cfg(cfg)
     base_velocities = sample_base_velocities(data_cfg, generator, device)
-    permutations = sample_permutations(
-        data_cfg.batch_size,
-        data_cfg.trajectory_length,
-        generator,
-        device,
-    )
+    permutations = sample_velocity_orders(data_cfg, generator, device)
     initial_positions = sample_initial_positions(data_cfg, generator, device).expand(
         data_cfg.batch_size,
         -1,
@@ -63,6 +58,25 @@ def make_sic_batch(
         velocities=velocities,
         positions=positions,
     )
+
+
+def sample_velocity_orders(
+    cfg: Config | DataConfig,
+    generator: torch.Generator,
+    device: torch.device | str,
+) -> torch.Tensor:
+    data_cfg = _data_cfg(cfg)
+    if data_cfg.augmentation_mode == "permutation":
+        return sample_permutations(
+            data_cfg.batch_size,
+            data_cfg.trajectory_length,
+            generator,
+            device,
+        )
+    if data_cfg.augmentation_mode == "identity":
+        order = torch.arange(data_cfg.trajectory_length, device=device)
+        return order.unsqueeze(0).expand(data_cfg.batch_size, -1)
+    raise ValueError(f"Unsupported augmentation_mode: {data_cfg.augmentation_mode}")
 
 
 def sample_initial_positions(

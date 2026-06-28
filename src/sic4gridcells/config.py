@@ -14,6 +14,7 @@ class DataConfig:
     trajectory_length: int = 60
     velocity_low: float = -0.15
     velocity_high: float = 0.15
+    augmentation_mode: str = "permutation"
     initial_position_mode: str = "zero"
     initial_position_low: float = 0.0
     initial_position_high: float = 0.0
@@ -61,12 +62,21 @@ DEFAULT_ASSUMPTIONS = [
     "loss.lambda_coniso defaults to 1.0 because the paper appendix table omits it.",
     "model.mlp_hidden_width defaults to 256 because the paper source omits it.",
     "model.trainable_initial_state defaults to true because the paper only states shared g0.",
+    "data.augmentation_mode defaults to permutation because SIC uses random velocity permutations.",
     "model.initial_position_encoding defaults to none to preserve the paper-style shared g0 baseline.",
     "data.initial_position_mode defaults to zero to preserve the paper-style shared origin baseline.",
     "train.scheduler_factor defaults to 0.5 because the paper source omits it.",
     "train.scheduler_patience defaults to 1000 optimizer steps because the paper source omits it.",
     "NormReLU maps all-zero post-ReLU vectors to all-zero vectors.",
 ]
+
+VALID_SCHEDULER_MONITORS = {
+    "loss/total",
+    "loss/separation",
+    "loss/invariance",
+    "loss/capacity",
+    "loss/conformal_isometry",
+}
 
 
 @dataclass
@@ -123,6 +133,8 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("data.trajectory_length must be positive")
     if cfg.data.velocity_low >= cfg.data.velocity_high:
         raise ValueError("data.velocity_low must be less than data.velocity_high")
+    if cfg.data.augmentation_mode not in {"permutation", "identity"}:
+        raise ValueError("data.augmentation_mode must be 'permutation' or 'identity'")
     if cfg.data.initial_position_mode not in {"zero", "uniform_box"}:
         raise ValueError("data.initial_position_mode must be 'zero' or 'uniform_box'")
     if cfg.data.initial_position_mode == "uniform_box":
@@ -153,6 +165,11 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("Only train.optimizer='adamw' is implemented")
     if cfg.train.scheduler != "reduce_on_plateau":
         raise ValueError("Only train.scheduler='reduce_on_plateau' is implemented")
+    if cfg.train.scheduler_monitor not in VALID_SCHEDULER_MONITORS:
+        raise ValueError(
+            "train.scheduler_monitor must be one of: "
+            + ", ".join(sorted(VALID_SCHEDULER_MONITORS))
+        )
     if cfg.train.scheduler_factor <= 0 or cfg.train.scheduler_factor >= 1:
         raise ValueError("train.scheduler_factor must be in (0, 1)")
     if cfg.train.scheduler_patience < 0:

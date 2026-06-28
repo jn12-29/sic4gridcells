@@ -36,6 +36,27 @@ def test_conformal_isometry_returns_zero_without_valid_steps() -> None:
     assert torch.equal(loss, torch.tensor(0.0))
 
 
+def test_conformal_isometry_matches_fixed_ratio_variance() -> None:
+    velocities = torch.tensor([[[0.03, 0.0], [0.04, 0.0], [0.10, 0.0]]])
+    initial_state = torch.tensor([[1.0, 0.0]])
+    hidden_states = torch.tensor([[[1.0, 0.03], [1.0, 0.11], [1.0, 0.50]]])
+
+    loss = conformal_isometry_loss(velocities, initial_state, hidden_states, sigma_x=0.05)
+
+    ratios = torch.tensor([1.0, 2.0])
+    assert torch.allclose(loss, ratios.var(unbiased=False))
+
+
+def test_invariance_pairs_exclude_self_pairs() -> None:
+    loss_cfg = LossConfig(pairwise_reduction="mean", chunk_size=2, sigma_x=0.2)
+    positions = torch.tensor([[[0.0, 0.0], [0.1, 0.0]]])
+    hidden_states = norm_relu(torch.tensor([[[1.0, 0.0], [1.0, 1.0]]]))
+
+    losses = pairwise_sic_losses(positions, hidden_states, loss_cfg)
+
+    assert torch.equal(losses["stats/invariance_pairs"], torch.tensor(2))
+
+
 def test_sic_losses_are_finite_and_capacity_is_non_positive() -> None:
     cfg = Config(
         data=DataConfig(batch_size=2, trajectory_length=3),

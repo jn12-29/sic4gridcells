@@ -54,7 +54,7 @@ Repo-specific instructions for agents working in this repository.
 - `configs/smoke.yaml` is the fast local workflow config.
 - `configs/medium.yaml` is the medium sanity-run config.
 - `configs/sic_paper.yaml` is the paper-scale config and should keep paper values unless the implementation plan changes.
-- `configs/ablations.yaml` is the ablation orchestration plan; `no_permutation_augmentation` is declared but disabled until the data config has a non-permutation mode.
+- `configs/ablations.yaml` is the ablation orchestration plan; `no_permutation_augmentation` uses `data.augmentation_mode: identity`.
 - `docs/sic-implementation-plan.md` owns implementation contracts and phase boundaries.
 - `docs/sic-reproduction-plan.md` owns paper-material rationale and reproduction scope.
 - `.work/sic-reproduction/source/` is paper source material only; do not import it as project code.

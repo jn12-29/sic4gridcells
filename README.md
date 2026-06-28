@@ -55,12 +55,12 @@ The smoke run writes:
 Evaluate the smoke checkpoint:
 
 ```bash
-.venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16
+.venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16 --seed 0
 ```
 
-The evaluation writes `summary.json`, `config.yaml`, and per-arena artifacts such as `ratemaps.npz`, `occupancy.npz`, `sacs.npz`, `grid_stats.csv`, `grid_stats.json`, `summary.png`, `ratemaps.pdf`, and `sacs.pdf`. Unvisited ratemap bins are stored as `NaN`; coverage is determined from `occupancy_counts`, visited zero responses remain `0.0`, and non-finite visited responses are reported as invalid in the JSON summaries. SAC/grid scoring uses finite ratemap bins as its overlap mask, and random-walk step scale is arena-size based rather than shrinking with `--steps`.
+The evaluation writes `summary.json`, `config.yaml`, and per-arena artifacts such as `ratemaps.npz`, `occupancy.npz`, `sacs.npz`, `grid_metrics.npz`, `grid_stats.csv`, `grid_stats.json`, `module_summary.csv`, `module_summary.json`, `trajectory_stats.json`, `pairwise_distance_stats.csv`, `pairwise_distance_stats.json`, `pairwise_distance.png`, `fourier_stats.csv`, `fourier_stats.json`, `phase_summary.csv`, `phase_summary.json`, `state_space_summary.csv`, `state_space_summary.json`, `state_space_modules.npz`, `grid_score_60_histogram.png`, `scale_meters_histogram.png`, `summary.png`, `ratemaps.pdf`, and `sacs.pdf`. Unvisited ratemap bins are stored as `NaN`; coverage is determined from `occupancy_counts`, visited zero responses remain `0.0`, and non-finite visited responses are reported as invalid in the JSON summaries. SAC/grid scoring uses finite ratemap bins as its overlap mask, grid scale is reported in both SAC pixels and meters, and random-walk step scale is arena-size based rather than shrinking with `--steps`.
 
-Evaluation defaults to `--start-mode origin`, which keeps reset model state aligned with position bins. `--start-mode uniform` is only valid for checkpoints trained with `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`.
+Evaluation defaults to `--start-mode origin`, which keeps reset model state aligned with position bins. `--start-mode uniform` is only valid for checkpoints trained with `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`. If `--seed` is omitted, evaluation uses the checkpoint config seed.
 
 ## Configs
 
@@ -73,6 +73,7 @@ Important training semantics:
 
 - `train.max_optimizer_steps` counts optimizer steps.
 - `train.accumulate_grad_batches` controls microbatches inside each optimizer step.
+- `data.augmentation_mode: permutation` is the SIC default; `identity` disables velocity permutation augmentation for the configured ablation.
 - `loss.pairwise_reduction: sum` is closer to the paper formulas; `mean` is useful for smaller smoke runs.
 
 ## Project Layout
@@ -97,6 +98,7 @@ Key modules:
 - `sic4gridcells.evaluate`: checkpoint reload, bounded random-walk evaluation, artifact writing.
 - `sic4gridcells.analysis`: ratemap, SAC, grid score, and grid-scale utilities.
 - `sic4gridcells.plotting`: PDF and PNG evaluation figures.
+- `docs/runbook.md`: medium, paper-scale, and ablation command sequence.
 
 ## Current Limits
 
@@ -104,5 +106,5 @@ This is not yet a full paper reproduction. The current code verifies the core tr
 
 - medium-scale training has a config but has not been run to completion here
 - paper-scale training and multi-seed sweeps
-- module clustering, orientation summaries, and full paper figure reproduction
-- state-space, Fourier, phase-tiling, and large-arena generalization analyses
+- full paper figure reproduction from trained results
+- toroidal manifold confirmation beyond the preliminary state-space PCA summaries

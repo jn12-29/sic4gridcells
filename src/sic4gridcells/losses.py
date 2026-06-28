@@ -47,14 +47,16 @@ def pairwise_sic_losses(
     sep_count = torch.zeros((), dtype=torch.long, device=g_all.device)
     inv_count = torch.zeros((), dtype=torch.long, device=g_all.device)
     g_sq_all = g_all.square().sum(dim=1)
+    all_indices = torch.arange(pos_all.shape[0], device=g_all.device)
     for start in range(0, pos_all.shape[0], loss_cfg.chunk_size):
         end = min(start + loss_cfg.chunk_size, pos_all.shape[0])
         pos_chunk = pos_all[start:end]
         g_chunk = g_all[start:end]
         x_dist = torch.cdist(pos_chunk, pos_all)
         g_dist_sq = _pairwise_squared_distances(g_chunk, g_all, g_sq_all)
+        not_self = torch.arange(start, end, device=g_all.device).unsqueeze(1) != all_indices
         sep_mask = x_dist > loss_cfg.sigma_x
-        inv_mask = x_dist < loss_cfg.sigma_x
+        inv_mask = (x_dist < loss_cfg.sigma_x) & not_self
         sep_total = sep_total + torch.exp(
             -g_dist_sq[sep_mask] / (2.0 * loss_cfg.sigma_g**2)
         ).sum()
@@ -82,8 +84,9 @@ def naive_pairwise_sic_losses(
     pos_all, g_all = _flatten_pairwise_inputs(positions, hidden_states)
     x_dist = torch.cdist(pos_all, pos_all)
     g_dist_sq = torch.cdist(g_all, g_all).square()
+    not_self = torch.eye(pos_all.shape[0], dtype=torch.bool, device=pos_all.device).logical_not()
     sep_mask = x_dist > loss_cfg.sigma_x
-    inv_mask = x_dist < loss_cfg.sigma_x
+    inv_mask = (x_dist < loss_cfg.sigma_x) & not_self
     sep_count = sep_mask.sum()
     inv_count = inv_mask.sum()
     sep_total = torch.exp(-g_dist_sq[sep_mask] / (2.0 * loss_cfg.sigma_g**2)).sum()

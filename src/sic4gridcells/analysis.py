@@ -40,6 +40,13 @@ class GridScoreResult:
     sacs: np.ndarray
 
 
+@dataclass(frozen=True)
+class GridMetrics:
+    scale_pixels: np.ndarray
+    orientation_degrees: np.ndarray
+    peak_counts: np.ndarray
+
+
 class GridScorer:
     def __init__(
         self,
@@ -233,14 +240,47 @@ class GridScorer:
         exclude_center_radius: float = 1.0,
         min_peak_value: float = 0.0,
     ) -> tuple[float, int]:
-        peak_distances = self.grid_scale_peak_distances(
+        peaks = self.grid_scale_peaks(
             sac,
             exclude_center_radius=exclude_center_radius,
             min_peak_value=min_peak_value,
         )
+        peak_distances = peaks.distances
         if peak_distances.size < n_peaks:
             return np.nan, int(peak_distances.size)
         return float(np.median(peak_distances[:n_peaks])), int(peak_distances.size)
+
+    def calculate_grid_metrics(
+        self,
+        sacs: np.ndarray,
+        n_peaks: int = 6,
+        exclude_center_radius: float = 1.0,
+        min_peak_value: float = 0.0,
+    ) -> GridMetrics:
+        sacs = np.asarray(sacs)
+        if sacs.ndim == 2:
+            sacs = sacs[np.newaxis, ...]
+        scales = np.full(sacs.shape[0], np.nan, dtype=np.float64)
+        orientations = np.full(sacs.shape[0], np.nan, dtype=np.float64)
+        peak_counts = np.zeros(sacs.shape[0], dtype=np.int64)
+        for index, sac in enumerate(sacs):
+            peaks = self.grid_scale_peaks(
+                sac,
+                exclude_center_radius=exclude_center_radius,
+                min_peak_value=min_peak_value,
+            )
+            peak_counts[index] = peaks.distances.size
+            if peaks.distances.size < n_peaks:
+                continue
+            selected_distances = peaks.distances[:n_peaks]
+            selected_angles = peaks.angles_degrees[:n_peaks]
+            scales[index] = float(np.median(selected_distances))
+            orientations[index] = _periodic_mean_degrees(selected_angles, period=60.0)
+        return GridMetrics(
+            scale_pixels=scales,
+            orientation_degrees=orientations,
+            peak_counts=peak_counts,
+        )
 
     def calculate_grid_scales(
         self,
@@ -271,6 +311,18 @@ class GridScorer:
         exclude_center_radius: float = 1.0,
         min_peak_value: float = 0.0,
     ) -> np.ndarray:
+        return self.grid_scale_peaks(
+            sac,
+            exclude_center_radius=exclude_center_radius,
+            min_peak_value=min_peak_value,
+        ).distances
+
+    def grid_scale_peaks(
+        self,
+        sac: np.ndarray,
+        exclude_center_radius: float = 1.0,
+        min_peak_value: float = 0.0,
+    ) -> "SacPeaks":
         sac = np.asarray(sac, dtype=np.float64)
         filled = np.where(np.isfinite(sac), sac, -np.inf)
         local_max = filled == scipy.ndimage.maximum_filter(
@@ -284,16 +336,26 @@ class GridScorer:
         center = np.asarray([(sac.shape[0] - 1) / 2.0, (sac.shape[1] - 1) / 2.0])
         coords = np.argwhere(local_max)
         if coords.size == 0:
-            return np.empty(0, dtype=np.float64)
+            return SacPeaks.empty()
         distances = np.linalg.norm(coords - center[np.newaxis, :], axis=1)
         keep = distances > float(exclude_center_radius)
         coords = coords[keep]
         distances = distances[keep]
         if distances.size == 0:
-            return np.empty(0, dtype=np.float64)
+            return SacPeaks.empty()
         values = sac[coords[:, 0], coords[:, 1]]
         order = np.lexsort((-values, distances))
-        return distances[order]
+        coords = coords[order]
+        distances = distances[order]
+        values = values[order]
+        deltas = coords.astype(np.float64) - center[np.newaxis, :]
+        angles = np.degrees(np.arctan2(deltas[:, 0], deltas[:, 1]))
+        return SacPeaks(
+            coords=coords,
+            distances=distances,
+            angles_degrees=np.mod(angles, 180.0),
+            values=values,
+        )
 
     def rotated_sacs(self, sac: np.ndarray, angles: list[int]) -> list[np.ndarray]:
         return [scipy.ndimage.rotate(sac, angle, reshape=False) for angle in angles]
@@ -335,3 +397,30 @@ def circle_mask(size: list[int], radius: float, in_val: float = 1.0, out_val: fl
     z = np.sqrt(x**2 + y**2)
     z = np.less_equal(z, radius)
     return np.where(z, in_val, out_val)
+
+
+@dataclass(frozen=True)
+class SacPeaks:
+    coords: np.ndarray
+    distances: np.ndarray
+    angles_degrees: np.ndarray
+    values: np.ndarray
+
+    @staticmethod
+    def empty() -> "SacPeaks":
+        return SacPeaks(
+            coords=np.empty((0, 2), dtype=np.int64),
+            distances=np.empty(0, dtype=np.float64),
+            angles_degrees=np.empty(0, dtype=np.float64),
+            values=np.empty(0, dtype=np.float64),
+        )
+
+
+def _periodic_mean_degrees(values: np.ndarray, period: float) -> float:
+    values = np.asarray(values, dtype=np.float64)
+    finite = np.isfinite(values)
+    if not np.any(finite):
+        return float("nan")
+    angles = values[finite] / period * 2.0 * np.pi
+    mean = np.angle(np.mean(np.exp(1j * angles)))
+    return float(np.mod(mean / (2.0 * np.pi) * period, period))

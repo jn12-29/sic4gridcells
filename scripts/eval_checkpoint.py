@@ -19,6 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nbins", type=int, default=32)
     parser.add_argument("--trajectories", type=int, default=32)
     parser.add_argument("--steps", type=int, default=256)
+    parser.add_argument("--seed", type=int, help="Evaluation trajectory seed. Defaults to checkpoint config seed.")
     parser.add_argument(
         "--start-mode",
         choices=("origin", "uniform"),
@@ -40,6 +41,7 @@ def main() -> None:
         n_trajectories=args.trajectories,
         steps_per_trajectory=args.steps,
         start_mode=args.start_mode,
+        seed=args.seed,
     )
     print(f"finished output_dir={result.output_dir}")
 

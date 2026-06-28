@@ -41,6 +41,45 @@ def save_summary_figure(
     plt.close(fig)
 
 
+def save_metric_histogram(values: np.ndarray, path: str | Path, title: str) -> None:
+    values = np.asarray(values, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axis = plt.subplots(figsize=(6.0, 4.0), constrained_layout=True)
+    axis.set_title(title)
+    axis.set_ylabel("units")
+    if values.size:
+        axis.hist(values, bins=min(20, max(4, values.size)), color="#2f6f73", edgecolor="white")
+    else:
+        axis.text(0.5, 0.5, "no finite values", ha="center", va="center", transform=axis.transAxes)
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def save_pairwise_distance_plot(
+    rows: list[dict[str, object]],
+    path: str | Path,
+    title: str,
+) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(10.0, 4.0), constrained_layout=True)
+    fig.suptitle(title)
+    for axis, kind in zip(axes, ("spatial", "temporal")):
+        kind_rows = [row for row in rows if row.get("kind") == kind and row.get("count", 0)]
+        xs = [_numeric_or_nan(row.get("mean_bin_value")) for row in kind_rows]
+        ys = [_numeric_or_nan(row.get("mean_neural_distance")) for row in kind_rows]
+        valid = np.isfinite(xs) & np.isfinite(ys)
+        if np.any(valid):
+            axis.plot(np.asarray(xs)[valid], np.asarray(ys)[valid], marker="o")
+        axis.set_xlabel("spatial distance (m)" if kind == "spatial" else "temporal separation")
+        axis.set_ylabel("neural distance")
+        axis.set_title(kind)
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
 def _save_grid_pdf(arrays: np.ndarray, path: str | Path, title: str, cmap: str) -> None:
     arrays = np.asarray(arrays)
     path = Path(path)
@@ -62,3 +101,12 @@ def _save_grid_pdf(arrays: np.ndarray, path: str | Path, title: str, cmap: str) 
                 axis.set_title(str(start + index), fontsize=8)
             pdf.savefig(fig)
             plt.close(fig)
+
+
+def _numeric_or_nan(value: object) -> float:
+    if value is None:
+        return float("nan")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")

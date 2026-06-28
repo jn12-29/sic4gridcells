@@ -16,6 +16,10 @@ from sic4gridcells.evaluate import (
     _evaluation_step_scale,
     _run_bounded_random_walks,
     _sample_bounded_random_walk,
+    _summarize_fourier_structure,
+    _summarize_phase_tiling,
+    _summarize_pairwise_neural_distances,
+    _summarize_state_space,
     _summarize_coverage,
     _summarize_unit_responses,
     _unit_response_counts,
@@ -58,17 +62,42 @@ def test_evaluate_checkpoint_writes_artifacts(tmp_path: Path) -> None:
     assert (arena_dir / "ratemaps.npz").exists()
     assert (arena_dir / "occupancy.npz").exists()
     assert (arena_dir / "sacs.npz").exists()
+    assert (arena_dir / "grid_metrics.npz").exists()
     assert (arena_dir / "grid_stats.csv").exists()
+    assert (arena_dir / "module_summary.csv").exists()
+    assert (arena_dir / "module_summary.json").exists()
+    assert (arena_dir / "trajectory_stats.json").exists()
+    assert (arena_dir / "pairwise_distance_stats.csv").exists()
+    assert (arena_dir / "pairwise_distance_stats.json").exists()
+    assert (arena_dir / "pairwise_distance.png").exists()
+    assert (arena_dir / "grid_score_60_histogram.png").exists()
+    assert (arena_dir / "scale_meters_histogram.png").exists()
+    assert (arena_dir / "fourier_stats.csv").exists()
+    assert (arena_dir / "fourier_stats.json").exists()
+    assert (arena_dir / "phase_summary.csv").exists()
+    assert (arena_dir / "phase_summary.json").exists()
+    assert (arena_dir / "state_space_summary.csv").exists()
+    assert (arena_dir / "state_space_summary.json").exists()
+    assert (arena_dir / "state_space_modules.npz").exists()
     assert (arena_dir / "summary.png").exists()
     assert (arena_dir / "ratemaps.pdf").exists()
     assert (arena_dir / "sacs.pdf").exists()
     assert (result.output_dir / "summary.json").exists()
     summary = _load_strict_json(result.output_dir / "summary.json")
     grid_stats = _load_strict_json(arena_dir / "grid_stats.json")
+    _load_strict_json(arena_dir / "fourier_stats.json")
+    _load_strict_json(arena_dir / "phase_summary.json")
+    _load_strict_json(arena_dir / "state_space_summary.json")
     occupancy = np.load(arena_dir / "occupancy.npz")["occupancy_counts"]
+    grid_metrics = np.load(arena_dir / "grid_metrics.npz")
     assert occupancy.shape == (6, 6)
     assert occupancy.sum() > 0
+    assert grid_metrics["scale_meters"].shape == (4,)
+    assert grid_metrics["module_ids"].shape == (4,)
     assert all("scale" in row for row in grid_stats)
+    assert all("scale_meters" in row for row in grid_stats)
+    assert all("orientation_degrees" in row for row in grid_stats)
+    assert all("module_id" in row for row in grid_stats)
     assert all(
         {
             "response_status",
@@ -80,6 +109,7 @@ def test_evaluate_checkpoint_writes_artifacts(tmp_path: Path) -> None:
         for row in grid_stats
     )
     arena_summary = summary["arena_summaries"][0]
+    assert summary["evaluation_seed"] == 0
     assert "dead_units" not in arena_summary
     assert arena_summary["visited_bins"] == int((occupancy > 0).sum())
     assert arena_summary["total_bins"] == 36
@@ -92,6 +122,10 @@ def test_evaluate_checkpoint_writes_artifacts(tmp_path: Path) -> None:
         "active_units",
     } <= set(arena_summary)
     assert "mean_scale" in arena_summary
+    assert "mean_scale_meters" in arena_summary
+    assert "detected_modules" in arena_summary
+    assert "state_space_modules" in arena_summary
+    assert "near_spatial_pair_count" in arena_summary
 
 
 def test_accumulate_ratemaps_returns_occupancy_and_preserves_nan_for_unvisited_bins() -> None:
@@ -183,6 +217,90 @@ def test_unit_response_summary_reports_no_coverage_separately() -> None:
     }
 
 
+def test_pairwise_neural_distance_summary_is_seeded_and_binned() -> None:
+    positions = np.array(
+        [
+            [[0.00, 0.00], [0.02, 0.00], [0.20, 0.00]],
+            [[0.00, 0.01], [0.02, 0.01], [0.20, 0.01]],
+        ],
+        dtype=np.float64,
+    )
+    hidden_states = np.array(
+        [
+            [[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]],
+            [[1.0, 0.1], [0.8, 0.2], [0.1, 1.0]],
+        ],
+        dtype=np.float64,
+    )
+
+    first = _summarize_pairwise_neural_distances(
+        positions,
+        hidden_states,
+        sigma_x=0.05,
+        seed=123,
+        max_pairs=10,
+    )
+    second = _summarize_pairwise_neural_distances(
+        positions,
+        hidden_states,
+        sigma_x=0.05,
+        seed=123,
+        max_pairs=10,
+    )
+
+    assert first == second
+    assert first["summary"]["sampled_pair_count"] <= 10
+    assert first["summary"]["near_spatial_pair_count"] > 0
+    assert first["summary"]["near_spatial_mean_neural_distance"] is not None
+    kinds = {row["kind"] for row in first["rows"]}
+    assert {"spatial", "temporal"} <= kinds
+    assert any(row["count"] > 0 for row in first["rows"] if row["kind"] == "spatial")
+    assert any(row["count"] > 0 for row in first["rows"] if row["kind"] == "temporal")
+
+
+def test_fourier_phase_and_state_space_summaries_are_finite_for_toy_data() -> None:
+    ratemaps = np.zeros((3, 8, 8), dtype=np.float64)
+    ratemaps[0, :, 2] = 1.0
+    ratemaps[1, 3, :] = 1.0
+    ratemaps[2] = np.nan
+    scale_meters = np.array([0.5, 0.5, np.nan], dtype=np.float64)
+    module_ids = np.array([0, 0, -1], dtype=np.int64)
+    hidden_states = np.stack(
+        [
+            np.linspace(0.0, 1.0, 24).reshape(8, 3),
+            np.linspace(1.0, 0.0, 24).reshape(8, 3),
+        ],
+        axis=0,
+    )
+    hidden_states[0, 0, 0] = np.nan
+
+    fourier = _summarize_fourier_structure(
+        ratemaps,
+        scale_meters,
+        module_ids,
+        arena_size=2.0,
+    )
+    phase = _summarize_phase_tiling(
+        ratemaps,
+        scale_meters,
+        module_ids,
+        arena_size=2.0,
+    )
+    state_space, arrays = _summarize_state_space(hidden_states, module_ids)
+
+    assert len(fourier) == 3
+    assert fourier[0]["dominant_frequency_cycles_per_meter"] is not None
+    assert fourier[2]["dominant_frequency_cycles_per_meter"] is None
+    assert 0.0 <= phase[0]["phase_x"] < 1.0
+    assert 0.0 <= phase[0]["phase_y"] < 1.0
+    assert state_space[0]["module_id"] == 0
+    assert state_space[0]["unit_count"] == 2
+    assert state_space[0]["dropped_nonfinite_samples"] == 1
+    assert state_space[0]["has_six_units"] is False
+    assert "module_0_projection3" in arrays
+    assert arrays["module_0_projection3"].shape[1] == 3
+
+
 def test_evaluate_checkpoint_supports_single_unit_summary_figure(tmp_path: Path) -> None:
     cfg = Config(
         seed=0,
@@ -236,35 +354,49 @@ def test_evaluation_step_scale_does_not_shrink_with_sample_count() -> None:
     assert _evaluation_step_scale(arena_size) > arena_size / 256 * 0.75
 
 
-def test_random_walk_step_size_does_not_shrink_with_sample_count(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    call_index = 0
-
-    def fake_rand(*args, **kwargs):
-        nonlocal call_index
-        value = 0.0 if call_index % 2 == 0 else 1.0
-        call_index += 1
-        return torch.tensor(value, device=kwargs.get("device"))
-
-    monkeypatch.setattr("torch.rand", fake_rand)
-
-    short_positions, _ = _sample_bounded_random_walk(
+def test_random_walk_step_size_does_not_shrink_with_sample_count() -> None:
+    short_positions, short_velocities = _sample_bounded_random_walk(
         2,
         2.0,
         device=torch.device("cpu"),
         start_mode="origin",
+        generator=torch.Generator().manual_seed(10),
     )
-    long_positions, _ = _sample_bounded_random_walk(
+    long_positions, long_velocities = _sample_bounded_random_walk(
         256,
         2.0,
         device=torch.device("cpu"),
         start_mode="origin",
+        generator=torch.Generator().manual_seed(10),
     )
 
-    expected_first_step = torch.tensor([_evaluation_step_scale(2.0), 0.0])
-    assert torch.allclose(short_positions[0], expected_first_step)
-    assert torch.allclose(long_positions[0], expected_first_step)
+    min_first_step = 0.5 * _evaluation_step_scale(2.0)
+    assert torch.linalg.norm(short_velocities[0]) >= min_first_step
+    assert torch.linalg.norm(long_velocities[0]) >= min_first_step
+    assert torch.allclose(short_positions[0], long_positions[0])
+
+
+def test_seeded_random_walk_is_reproducible() -> None:
+    generator_a = torch.Generator().manual_seed(11)
+    generator_b = torch.Generator().manual_seed(11)
+
+    positions_a, velocities_a = _sample_bounded_random_walk(
+        16,
+        2.0,
+        device=torch.device("cpu"),
+        start_mode="origin",
+        generator=generator_a,
+    )
+    positions_b, velocities_b = _sample_bounded_random_walk(
+        16,
+        2.0,
+        device=torch.device("cpu"),
+        start_mode="origin",
+        generator=generator_b,
+    )
+
+    assert torch.allclose(positions_a, positions_b)
+    assert torch.allclose(velocities_a, velocities_b)
 
 
 def test_random_walk_velocity_scale_is_bounded_by_arena_scale() -> None:

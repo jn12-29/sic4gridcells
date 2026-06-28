@@ -31,6 +31,18 @@ def test_each_trajectory_is_permutation_of_base_velocities() -> None:
     )
 
 
+def test_identity_augmentation_preserves_base_velocity_order() -> None:
+    cfg = DataConfig(batch_size=3, trajectory_length=5, augmentation_mode="identity")
+    generator = torch.Generator().manual_seed(4)
+    batch = make_sic_batch(cfg, generator, "cpu")
+
+    expected_order = torch.arange(cfg.trajectory_length).expand(cfg.batch_size, -1)
+    assert torch.equal(batch.permutations, expected_order)
+    assert torch.allclose(batch.velocities, batch.base_velocities.expand(cfg.batch_size, -1, -1))
+    expected_positions = batch.base_velocities.cumsum(dim=0).unsqueeze(0).expand(cfg.batch_size, -1, -1)
+    assert torch.allclose(batch.positions, expected_positions)
+
+
 def test_uniform_initial_position_is_shared_within_batch() -> None:
     cfg = DataConfig(
         batch_size=3,
