@@ -2,7 +2,7 @@
 
 Plain PyTorch reproduction scaffold for the SIC grid-cell model from Schaeffer et al., "Self-Supervised Learning of Representations for Space Generates Multi-Modular Grid Cells".
 
-The current repository implements the first runnable training slice: SIC velocity permutation batches, velocity-conditioned RNN rollout, separation/invariance/capacity/conformal-isometry losses, a training loop, smoke and paper configs, and unit tests. Evaluation, ratemaps, grid scoring, and ablation orchestration are planned but not implemented yet; see `docs/sic-implementation-plan.md` and `docs/sic-reproduction-plan.md`.
+The current repository implements a runnable SIC reproduction slice: SIC velocity permutation batches, velocity-conditioned RNN rollout, separation/invariance/capacity/conformal-isometry losses, training, checkpoint evaluation, ratemaps, SAC/grid scoring, smoke/medium/paper configs, ablation orchestration, and unit tests. See `docs/sic-implementation-plan.md` and `docs/sic-reproduction-plan.md` for reproduction scope and remaining paper-level work.
 
 ## Setup
 
@@ -16,7 +16,7 @@ uv pip install --python .venv/bin/python -e .
 If dependencies need to be installed or refreshed, keep targeting the local environment explicitly:
 
 ```bash
-uv pip install --python .venv/bin/python torch numpy pyyaml tqdm tensorboard pytest
+uv pip install --python .venv/bin/python torch numpy scipy matplotlib pyyaml tqdm tensorboard pytest
 ```
 
 Do not use bare `uv pip install ...` in this workspace; on this machine it can install into the active conda environment instead of `.venv`.
@@ -52,10 +52,22 @@ The smoke run writes:
 
 `results/` is ignored by git.
 
+Evaluate the smoke checkpoint:
+
+```bash
+.venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16
+```
+
+The evaluation writes `summary.json`, `config.yaml`, and per-arena artifacts such as `ratemaps.npz`, `occupancy.npz`, `sacs.npz`, `grid_stats.csv`, `grid_stats.json`, `summary.png`, `ratemaps.pdf`, and `sacs.pdf`. Unvisited ratemap bins are stored as `NaN`; coverage is determined from `occupancy_counts`, visited zero responses remain `0.0`, and non-finite visited responses are reported as invalid in the JSON summaries. SAC/grid scoring uses finite ratemap bins as its overlap mask, and random-walk step scale is arena-size based rather than shrinking with `--steps`.
+
+Evaluation defaults to `--start-mode origin`, which keeps reset model state aligned with position bins. `--start-mode uniform` is only valid for checkpoints trained with `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`.
+
 ## Configs
 
 - `configs/smoke.yaml`: small CPU smoke run for tests and workflow checks.
+- `configs/medium.yaml`: medium sanity-run profile (`B=16`, `T=30`, `N=64`).
 - `configs/sic_paper.yaml`: paper-scale training hyperparameters from the reproduction plan.
+- `configs/ablations.yaml`: ablation orchestration plan for `scripts/run_ablations.py`.
 
 Important training semantics:
 
@@ -66,9 +78,11 @@ Important training semantics:
 ## Project Layout
 
 ```text
-configs/                  YAML training configs
+configs/                  YAML training and ablation configs
 docs/                     reproduction and implementation plans
-scripts/train_sic.py      thin CLI entry point
+scripts/train_sic.py      thin training CLI entry point
+scripts/eval_checkpoint.py checkpoint evaluation CLI
+scripts/run_ablations.py  ablation orchestration CLI
 src/sic4gridcells/        package source
 tests/                    pytest suite
 ```
@@ -80,15 +94,15 @@ Key modules:
 - `sic4gridcells.model`: NormReLU and velocity-conditioned RNN.
 - `sic4gridcells.losses`: SIC losses and tiny naive pairwise implementation for tests.
 - `sic4gridcells.train`: training loop, metrics, TensorBoard logging, checkpointing.
+- `sic4gridcells.evaluate`: checkpoint reload, bounded random-walk evaluation, artifact writing.
+- `sic4gridcells.analysis`: ratemap, SAC, grid score, and grid-scale utilities.
+- `sic4gridcells.plotting`: PDF and PNG evaluation figures.
 
 ## Current Limits
 
-This is not yet a full paper reproduction. The current code verifies the core training contracts and smoke execution. The following are not implemented in the package yet:
+This is not yet a full paper reproduction. The current code verifies the core training and evaluation contracts, but these paper-level pieces still require longer runs and analysis:
 
-- ratemap generation
-- grid score and module detection
-- checkpoint evaluation CLI
-- medium-scale sanity config
-- paper-figure plotting
-- ablation runner
-
+- medium-scale training has a config but has not been run to completion here
+- paper-scale training and multi-seed sweeps
+- module clustering, orientation summaries, and full paper figure reproduction
+- state-space, Fourier, phase-tiling, and large-arena generalization analyses

@@ -18,9 +18,9 @@
 - 不把 `.work/sic-reproduction/source/` 当成项目源码；它只作为论文材料证据。
 - 第一阶段不追求论文图完全复刻，只追求核心数据、模型、loss、训练和 smoke evaluation 可验证。
 
-## 项目文件计划
+## 项目文件状态
 
-第一批要创建的源码和配置：
+核心训练源码和配置：
 
 ```text
 pyproject.toml
@@ -40,7 +40,7 @@ tests/test_losses.py
 tests/test_train_step.py
 ```
 
-第二批评估文件：
+评估文件：
 
 ```text
 src/sic4gridcells/evaluate.py
@@ -51,13 +51,14 @@ tests/test_analysis.py
 tests/test_evaluate.py
 ```
 
-第三批实验编排：
+实验编排文件：
 
 ```text
 configs/ablations.yaml
 scripts/run_ablations.py
-docs/runbook.md
 ```
+
+`docs/runbook.md` 可在开始中等规模或 paper-scale 长跑前再补充，目前不是已实现文件。
 
 ## 核心接口与默认决策
 
@@ -74,10 +75,14 @@ docs/runbook.md
 - `data.trajectory_length`: paper 为 `60`。
 - `data.velocity_low`: `-0.15`。
 - `data.velocity_high`: `0.15`。
+- `data.initial_position_mode`: `"zero"` 或 `"uniform_box"`；默认 `"zero"` 保持共享原点 baseline。
+- `data.initial_position_low/high`: 仅在 `"uniform_box"` 时用于采样共享 batch 初始位置。
 - `model.n_units`: paper 为 `128`。
 - `model.mlp_layers`: paper 为 `3`。
 - `model.mlp_hidden_width`: 默认 `256`，论文未指定，必须写入 effective config。
 - `model.trainable_initial_state`: 默认 `true`，论文只说明 shared `g0`，未说明是否 trainable。
+- `model.initial_position_encoding`: `"none"` 或 `"additive_mlp"`；默认 `"none"` 保持 shared `g0` baseline。
+- `model.initial_position_hidden_width`: 默认 `64`。
 - `loss.sigma_x`: paper 为 `0.05`。
 - `loss.sigma_g`: paper 为 `0.4`。
 - `loss.lambda_sep`: `1.0`。
@@ -111,14 +116,16 @@ docs/runbook.md
 
 - `base_velocities`: `(T, 2)`。
 - `permutations`: `(B, T)`。
+- `initial_positions`: `(B, 2)`；`zero` 模式为全零，`uniform_box` 模式从配置区间采样一个 shared 起点并扩展到 batch。
 - `velocities`: `(B, T, 2)`，由 `base_velocities[permutations]` 得到。
-- `positions`: `(B, T, 2)`，从同一原点 cumulative sum。
+- `positions`: `(B, T, 2)`，等于 `initial_positions[:, None, :] + velocities.cumsum(dim=1)`。
 
 必须满足：
 
 - 每条置换轨迹包含同一组 base velocities。
 - 所有轨迹终点一致。
 - `positions[:, t]` 表示执行第 `t` 个 velocity 后的位置。
+- 默认 `data.initial_position_mode: "zero"` 保持共享原点 baseline；`"uniform_box"` 只在配合初始位置编码的实验中使用。
 
 ### Model
 
@@ -128,8 +135,9 @@ docs/runbook.md
 - `VelocityConditionedRNN(cfg)`：
   - `transition_mlp(v_t)` 输出 `(B, N*N)`，reshape 为 `(B, N, N)`。
   - 每个 time step 只 materialize 当前 `W(v_t)`，用 `torch.bmm(W_t, g_prev[..., None])` 更新，避免保存完整 `(B,T,N,N)`。
-  - `g0_raw` 为 trainable parameter；每个 batch 使用 `norm_relu(g0_raw)` 后扩展到 `(B, N)`。
-  - `forward(velocities) -> RNNRollout`，其中 `initial_state` 为 `(B, N)`，`hidden_states` 为 `(B, T, N)`。
+  - `g0_raw` 为 trainable parameter；默认 `model.initial_position_encoding: "none"` 时使用 `norm_relu(g0_raw)` 后扩展到 `(B, N)`。
+  - `model.initial_position_encoding: "additive_mlp"` 时要求传入 `initial_positions`，并使用 `norm_relu(g0_raw + position_encoder(initial_positions))` 作为 batch 初始状态。
+  - `forward(velocities, initial_positions=None) -> RNNRollout`，其中 `initial_state` 为 `(B, N)`，`hidden_states` 为 `(B, T, N)`；`"none"` 模式拒绝非空 `initial_positions`。
   - `Norm(ReLU)` 遇到全零向量时输出零向量是实现假设；论文只给出除以范数公式，因此 metrics 必须记录 zero-norm fraction。
 
 ### Losses
@@ -234,51 +242,59 @@ docs/runbook.md
 
 ### 阶段 3：评估链路
 
-变更：
+当前实现：
 
-- 实现 bounded random-walk evaluation trajectory generator。
-- Vendor 或最小移植 `grid-cells-torch/grid_cells/analysis/scores.py` 的 GridScorer 逻辑，并保留来源说明。
-- 实现 ratemap、SAC、grid score、grid scale histogram、all-unit PDF。
+- `src/sic4gridcells/evaluate.py` 实现 bounded random-walk evaluation trajectory generator、checkpoint reload 和 artifact 写出。
+- `src/sic4gridcells/analysis.py` 最小移植 GridScorer 风格的 ratemap、SAC、grid score 和 grid scale 逻辑。
+- `src/sic4gridcells/plotting.py` 输出 `summary.png`、`ratemaps.pdf` 和 `sacs.pdf`。
+- `scripts/eval_checkpoint.py` 是薄 CLI；训练 config 从 checkpoint 中读取，不另传 `--config`。
+- `ratemaps.npz` 将未访问空间 bin 保存为 `NaN`；访问过但响应为零的 bin 保持 `0.0`。
+- `occupancy.npz` 保存 `occupancy_counts`，是 coverage 指标的 source of truth；访问过的 bin 若出现非有限响应，归类为 invalid response，而不是 coverage gap。
+- `summary.json` 输出 `visited_bins`、`unvisited_bins`、`total_bins`、`coverage_fraction`、`units_without_coverage`、`zero_response_units`、`invalid_response_units` 和 `active_units`。
+- `grid_stats.json/csv` 对每个 unit 输出 `response_status`、`max_abs_response`、`zero_response` 和 `invalid_response`，不再用 `dead_units` 混合 coverage 和 zero response。
+- SAC/grid score 计算使用 finite ratemap bins 作为 overlap mask，未访问 bin 只在 FFT 数值计算中填 0，不作为 measured zero response。
+- bounded random-walk 的步长按 arena 尺度设定，不随 `--steps` 增加而缩小。
 
 验证：
 
 ```bash
 .venv/bin/python -m pytest tests/test_analysis.py tests/test_evaluate.py
-.venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --config configs/smoke.yaml
+.venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16
 ```
 
 验收：
 
 - smoke checkpoint 可 reload。
-- eval 输出 ratemap arrays、grid stats JSON/CSV、至少一个 PDF 或 PNG。
+- eval 输出 ratemap arrays、occupancy counts、grid stats JSON/CSV、至少一个 PDF 或 PNG。
 - 评估代码不读取或生成 supervised target。
 
 ### 阶段 4：中等规模 sanity run
 
-变更：
+当前实现：
 
-- 增加 `configs/medium.yaml`，建议 `B=16`、`T=30`、`N=64`、`max_optimizer_steps=5000`。
-- 增加 runbook 中的命令和资源建议。
+- `configs/medium.yaml` 已提供 `B=16`、`T=30`、`N=64`、`max_optimizer_steps=5000` 的 sanity-run profile。
+- 训练和评估仍按独立命令运行；中等规模长跑尚未在本仓库完成。
 
 验证：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/train_sic.py --config configs/medium.yaml
-.venv/bin/python scripts/eval_checkpoint.py --checkpoint <medium-checkpoint> --config configs/medium.yaml
+.venv/bin/python scripts/eval_checkpoint.py --checkpoint <medium-checkpoint> --output-dir results/medium/eval
 ```
 
 验收：
 
 - 中等规模 run 不 OOM。
 - 至少部分 units 出现空间调谐或周期趋势。
-- metrics 中记录 pair counts、throughput、GPU memory 和 dead/zero-norm fraction。
+- metrics 中记录 pair counts 和 zero-norm fraction；throughput、GPU memory 和 dead-unit count 仍属于后续监控增强。
 
 ### 阶段 5：paper config 和消融
 
-变更：
+当前实现：
 
-- 完成 `configs/sic_paper.yaml`。
-- 完成 `configs/ablations.yaml` 和 `scripts/run_ablations.py`。
+- `configs/sic_paper.yaml` 保留 paper-scale 训练参数。
+- `configs/ablations.yaml` 和 `scripts/run_ablations.py` 提供 config-driven ablation orchestration。
+- `no_permutation_augmentation` 已在 ablation config 中声明但禁用，因为当前 data config 尚无关闭 permutation augmentation 的字段。
 
 验证：
 
@@ -314,10 +330,9 @@ CUDA_VISIBLE_DEVICES=<id> .venv/bin/python scripts/train_sic.py --config configs
 - 训练/配置/运行时合同。
 - 评估指标和论文图目标。
 
-## 立即开工顺序
+## 当前后续顺序
 
-1. 创建 `pyproject.toml`、package skeleton、`configs/smoke.yaml` 和 `configs/sic_paper.yaml`。
-2. 实现 `config.py`、`data.py`、`model.py`、`losses.py` 及对应单元测试。
-3. 跑 `.venv/bin/python -m pytest`。
-4. 实现训练循环和 `scripts/train_sic.py`。
-5. 跑 10-step smoke training，并把结果路径记录到后续 runbook。
+1. 跑中等规模 sanity training，并用 `scripts/eval_checkpoint.py` 评估生成的 checkpoint。
+2. 根据中等规模结果补 module clustering、orientation summaries 和 pairwise neural-distance plots。
+3. 如需复现 paper-scale 结果，先补长跑 runbook、throughput/GPU memory 记录和 checkpoint/evaluation cadence。
+4. 执行 `configs/ablations.yaml` 中已启用的 matched ablations；`no_permutation_augmentation` 需先扩展 data config 后再启用。

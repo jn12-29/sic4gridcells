@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -59,7 +60,12 @@ def train_with_config(cfg: Config) -> RunResult:
                 micro_metrics: list[dict[str, float]] = []
                 for _ in range(cfg.train.accumulate_grad_batches):
                     batch = make_sic_batch(cfg, generator, device)
-                    rollout = model(batch.velocities)
+                    initial_positions = (
+                        batch.initial_positions
+                        if cfg.model.initial_position_encoding != "none"
+                        else None
+                    )
+                    rollout = model(batch.velocities, initial_positions=initial_positions)
                     losses = sic_losses(batch, rollout, cfg)
                     (losses["loss/total"] / cfg.train.accumulate_grad_batches).backward()
                     micro_metrics.append(
@@ -140,11 +146,21 @@ def _write_metrics(
     step: int,
     metrics: dict[str, float],
 ) -> None:
-    metrics_file.write(json.dumps(metrics, sort_keys=True) + "\n")
+    json_metrics = {
+        key: _json_metric_value(value)
+        for key, value in metrics.items()
+    }
+    metrics_file.write(json.dumps(json_metrics, sort_keys=True, allow_nan=False) + "\n")
     metrics_file.flush()
     for key, value in metrics.items():
-        if key != "step":
+        if key != "step" and math.isfinite(value):
             writer.add_scalar(key, value, step)
+
+
+def _json_metric_value(value: float) -> float | None:
+    if not math.isfinite(value):
+        return None
+    return value
 
 
 def _save_checkpoint(

@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from sic4gridcells.config import ModelConfig
@@ -31,3 +32,39 @@ def test_velocity_conditioned_rnn_shapes_and_gradients() -> None:
     ]
     assert grad_norms
     assert all(torch.isfinite(value) for value in grad_norms)
+
+
+def test_initial_positions_rejected_without_encoder() -> None:
+    cfg = ModelConfig(n_units=4, mlp_layers=1)
+    model = VelocityConditionedRNN(cfg)
+    velocities = torch.randn(2, 3, 2)
+    initial_positions = torch.randn(2, 2)
+    with pytest.raises(ValueError, match="initial_position_encoding"):
+        model(velocities, initial_positions=initial_positions)
+
+
+def test_additive_initial_position_encoder_shapes_and_gradients() -> None:
+    cfg = ModelConfig(
+        n_units=6,
+        mlp_layers=2,
+        mlp_hidden_width=8,
+        initial_position_encoding="additive_mlp",
+        initial_position_hidden_width=5,
+    )
+    model = VelocityConditionedRNN(cfg)
+    velocities = torch.randn(3, 4, 2)
+    initial_positions = torch.randn(3, 2)
+
+    rollout = model(velocities, initial_positions=initial_positions)
+
+    assert rollout.initial_state.shape == (3, 6)
+    assert rollout.hidden_states.shape == (3, 4, 6)
+    loss = rollout.hidden_states.sum()
+    loss.backward()
+    encoder_grads = [
+        parameter.grad
+        for parameter in model.position_encoder.parameters()
+        if parameter.grad is not None
+    ]
+    assert encoder_grads
+    assert all(torch.isfinite(value).all() for value in encoder_grads)

@@ -10,7 +10,9 @@ def test_load_smoke_config() -> None:
     cfg = load_config("configs/smoke.yaml")
     assert cfg.data.batch_size == 4
     assert cfg.data.trajectory_length == 8
+    assert cfg.data.initial_position_mode == "zero"
     assert cfg.model.n_units == 16
+    assert cfg.model.initial_position_encoding == "none"
     assert cfg.loss.pairwise_reduction == "mean"
     assert cfg.train.max_optimizer_steps == 10
 
@@ -24,10 +26,41 @@ def test_load_paper_config_records_assumptions() -> None:
     assert any("mlp_hidden_width" in item for item in cfg.assumptions)
 
 
+def test_load_medium_config_is_sanity_scale() -> None:
+    cfg = load_config("configs/medium.yaml")
+    assert cfg.data.batch_size == 16
+    assert cfg.data.trajectory_length == 30
+    assert cfg.model.n_units == 64
+    assert cfg.model.mlp_hidden_width == 128
+    assert cfg.loss.pairwise_reduction == "mean"
+    assert cfg.train.max_optimizer_steps == 5000
+    assert cfg.train.max_optimizer_steps < load_config("configs/sic_paper.yaml").train.max_optimizer_steps
+
+
 def test_unknown_config_key_fails(tmp_path: Path) -> None:
     path = tmp_path / "bad.yaml"
     path.write_text("unknown: true\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Unknown config key"):
+        load_config(path)
+
+
+def test_invalid_initial_position_modes_fail(tmp_path: Path) -> None:
+    path = tmp_path / "bad-initial-position.yaml"
+    path.write_text(
+        yaml.safe_dump({"data": {"initial_position_mode": "random"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="data.initial_position_mode"):
+        load_config(path)
+
+
+def test_invalid_initial_position_encoder_fails(tmp_path: Path) -> None:
+    path = tmp_path / "bad-initial-position-encoder.yaml"
+    path.write_text(
+        yaml.safe_dump({"model": {"initial_position_encoding": "bad"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="model.initial_position_encoding"):
         load_config(path)
 
 

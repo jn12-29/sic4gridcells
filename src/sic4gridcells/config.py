@@ -14,6 +14,9 @@ class DataConfig:
     trajectory_length: int = 60
     velocity_low: float = -0.15
     velocity_high: float = 0.15
+    initial_position_mode: str = "zero"
+    initial_position_low: float = 0.0
+    initial_position_high: float = 0.0
 
 
 @dataclass
@@ -22,6 +25,8 @@ class ModelConfig:
     mlp_layers: int = 3
     mlp_hidden_width: int = 256
     trainable_initial_state: bool = True
+    initial_position_encoding: str = "none"
+    initial_position_hidden_width: int = 64
 
 
 @dataclass
@@ -56,6 +61,8 @@ DEFAULT_ASSUMPTIONS = [
     "loss.lambda_coniso defaults to 1.0 because the paper appendix table omits it.",
     "model.mlp_hidden_width defaults to 256 because the paper source omits it.",
     "model.trainable_initial_state defaults to true because the paper only states shared g0.",
+    "model.initial_position_encoding defaults to none to preserve the paper-style shared g0 baseline.",
+    "data.initial_position_mode defaults to zero to preserve the paper-style shared origin baseline.",
     "train.scheduler_factor defaults to 0.5 because the paper source omits it.",
     "train.scheduler_patience defaults to 1000 optimizer steps because the paper source omits it.",
     "NormReLU maps all-zero post-ReLU vectors to all-zero vectors.",
@@ -116,12 +123,24 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("data.trajectory_length must be positive")
     if cfg.data.velocity_low >= cfg.data.velocity_high:
         raise ValueError("data.velocity_low must be less than data.velocity_high")
+    if cfg.data.initial_position_mode not in {"zero", "uniform_box"}:
+        raise ValueError("data.initial_position_mode must be 'zero' or 'uniform_box'")
+    if cfg.data.initial_position_mode == "uniform_box":
+        if cfg.data.initial_position_low >= cfg.data.initial_position_high:
+            raise ValueError(
+                "data.initial_position_low must be less than initial_position_high "
+                "when data.initial_position_mode='uniform_box'"
+            )
     if cfg.model.n_units <= 0:
         raise ValueError("model.n_units must be positive")
     if cfg.model.mlp_layers <= 0:
         raise ValueError("model.mlp_layers must be positive")
     if cfg.model.mlp_hidden_width <= 0:
         raise ValueError("model.mlp_hidden_width must be positive")
+    if cfg.model.initial_position_encoding not in {"none", "additive_mlp"}:
+        raise ValueError("model.initial_position_encoding must be 'none' or 'additive_mlp'")
+    if cfg.model.initial_position_hidden_width <= 0:
+        raise ValueError("model.initial_position_hidden_width must be positive")
     if cfg.loss.sigma_x <= 0:
         raise ValueError("loss.sigma_x must be positive")
     if cfg.loss.sigma_g <= 0:

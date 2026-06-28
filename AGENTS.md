@@ -26,6 +26,11 @@ Repo-specific instructions for agents working in this repository.
 | Run train smoke test | `.venv/bin/python -m pytest tests/test_train_step.py` |
 | Show training CLI help | `.venv/bin/python scripts/train_sic.py --help` |
 | Run smoke training | `.venv/bin/python scripts/train_sic.py --config configs/smoke.yaml` |
+| Run evaluation tests | `.venv/bin/python -m pytest tests/test_analysis.py tests/test_evaluate.py` |
+| Show evaluation CLI help | `.venv/bin/python scripts/eval_checkpoint.py --help` |
+| Evaluate smoke checkpoint | `.venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16` |
+| Show ablation CLI help | `.venv/bin/python scripts/run_ablations.py --help` |
+| Dry-run ablations | `.venv/bin/python scripts/run_ablations.py --config configs/ablations.yaml --dry-run` |
 
 ## Current Contracts
 
@@ -37,11 +42,19 @@ Repo-specific instructions for agents working in this repository.
 - `RNNRollout.hidden_states` has shape `(B, T, N)`.
 - `sic_losses(batch, rollout, cfg)` returns `loss/total`, individual loss terms, and pair/step counts.
 - Checkpoints must remain loadable with default `torch.load(path, map_location="cpu")`; store config data as built-in containers, not custom dataclass objects.
+- `scripts/eval_checkpoint.py` reloads the training config from the checkpoint; it does not take a separate `--config`.
+- Evaluation trajectories are bounded random walks and must not reuse supervised place-cell or head-direction targets.
+- `scripts/eval_checkpoint.py --start-mode origin` is the default for no-encoder checkpoints; `--start-mode uniform` requires `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`.
+- Ratemap empty bins remain `NaN`; visited zero responses remain `0.0`. Evaluation writes `occupancy.npz` for coverage and reports `units_without_coverage`, `zero_response_units`, `invalid_response_units`, and `active_units` instead of using `dead_units` as a coverage proxy.
+- SAC/grid scoring must use finite ratemap bins as its overlap mask; evaluation walk step scale must not shrink as `--steps` increases.
+- Evaluation artifacts live under caller-selected `results/` output directories.
 
 ## File Ownership
 
 - `configs/smoke.yaml` is the fast local workflow config.
+- `configs/medium.yaml` is the medium sanity-run config.
 - `configs/sic_paper.yaml` is the paper-scale config and should keep paper values unless the implementation plan changes.
+- `configs/ablations.yaml` is the ablation orchestration plan; `no_permutation_augmentation` is declared but disabled until the data config has a non-permutation mode.
 - `docs/sic-implementation-plan.md` owns implementation contracts and phase boundaries.
 - `docs/sic-reproduction-plan.md` owns paper-material rationale and reproduction scope.
 - `.work/sic-reproduction/source/` is paper source material only; do not import it as project code.
@@ -56,4 +69,3 @@ After changing code, configs, scripts, or docs that mention commands, run the na
 ```
 
 Before finishing docs changes, verify referenced paths exist and grep the changed docs for stale placeholders or claims about unimplemented evaluation features.
-

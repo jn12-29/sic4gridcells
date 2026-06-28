@@ -1,0 +1,39 @@
+seed: 0
+device: auto
+output_dir: results/medium
+
+data:
+  batch_size: 16
+  trajectory_length: 30
+  velocity_low: -0.15
+  velocity_high: 0.15
+
+model:
+  n_units: 64
+  mlp_layers: 3
+  mlp_hidden_width: 128
+  trainable_initial_state: true
+
+loss:
+  sigma_x: 0.05
+  sigma_g: 0.4
+  lambda_sep: 1.0
+  lambda_inv: 0.1
+  lambda_cap: 0.5
+  lambda_coniso: 1.0
+  pairwise_reduction: mean
+  chunk_size: 256
+
+train:
+  optimizer: adamw
+  scheduler: reduce_on_plateau
+  scheduler_monitor: loss/total
+  scheduler_factor: 0.5
+  scheduler_patience: 250
+  lr: 0.00002
+  weight_decay: 0.0
+  grad_clip_norm: 0.1
+  accumulate_grad_batches: 2
+  max_optimizer_steps: 5000
+  checkpoint_every: 500
+  log_every: 10

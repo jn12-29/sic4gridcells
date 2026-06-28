@@ -11,6 +11,7 @@ from sic4gridcells.config import Config, DataConfig
 class SicBatch:
     base_velocities: torch.Tensor
     permutations: torch.Tensor
+    initial_positions: torch.Tensor
     velocities: torch.Tensor
     positions: torch.Tensor
 
@@ -49,14 +50,38 @@ def make_sic_batch(
         generator,
         device,
     )
+    initial_positions = sample_initial_positions(data_cfg, generator, device).expand(
+        data_cfg.batch_size,
+        -1,
+    )
     velocities = base_velocities[permutations]
-    positions = velocities.cumsum(dim=1)
+    positions = initial_positions.unsqueeze(1) + velocities.cumsum(dim=1)
     return SicBatch(
         base_velocities=base_velocities,
         permutations=permutations,
+        initial_positions=initial_positions,
         velocities=velocities,
         positions=positions,
     )
+
+
+def sample_initial_positions(
+    cfg: Config | DataConfig,
+    generator: torch.Generator,
+    device: torch.device | str,
+) -> torch.Tensor:
+    data_cfg = _data_cfg(cfg)
+    if data_cfg.initial_position_mode == "zero":
+        return torch.zeros(2, device=device)
+    if data_cfg.initial_position_mode == "uniform_box":
+        values = torch.empty(2)
+        values.uniform_(
+            data_cfg.initial_position_low,
+            data_cfg.initial_position_high,
+            generator=generator,
+        )
+        return values.to(device)
+    raise ValueError(f"Unsupported initial_position_mode: {data_cfg.initial_position_mode}")
 
 
 def _data_cfg(cfg: Config | DataConfig) -> DataConfig:

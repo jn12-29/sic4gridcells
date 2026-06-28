@@ -178,9 +178,9 @@ sic4gridcells/
 - Fourier/phase/state-space analyses 显示与 Fig. 3 可比的 module-level structure；该分析需要足够多 co-modular units，必要时使用多数 units 同周期的对照 run。
 - Ablations 复现 Fig. 4 和 appendix ratemaps 描述的定性变化。
 
-## 立即下一步
+## 当前下一步
 
-1. 创建 `pyproject.toml`、configs、package skeleton 和 tests。
-2. 实现并测试 SIC data generation、`NormReLU`、recurrent rollout 和 exact chunked losses。
-3. 运行 `uv venv --python 3.12`，安装依赖并执行单元测试。
-4. 运行 10-step smoke experiment，保存首个 checkpoint 和 evaluation artifacts。
+1. 运行中等规模 sanity experiment，并用 `scripts/eval_checkpoint.py` 生成 ratemaps、SAC、grid stats 和 figures。
+2. 根据中等规模结果补充 module clustering、orientation summaries、pairwise neural-distance plots 和 long-run runbook。
+3. 用 `configs/ablations.yaml` 和 `scripts/run_ablations.py` 执行 matched ablations；`no_permutation_augmentation` 需要先扩展 data config 后再启用。
+4. 在 paper-scale 长跑前记录 GPU memory、throughput 和 checkpoint/evaluation cadence。

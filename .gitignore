@@ -1,5 +1,6 @@
 .venv/
 .work/
+.planning/
 /data/
 /results/
 /outputs/

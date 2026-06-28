@@ -1,0 +1,85 @@
+output_root: results/ablations
+config_dir: results/ablations/configs
+continue_on_error: false
+
+base:
+  seed: 0
+  device: auto
+  output_dir: results/ablations/base
+
+  data:
+    batch_size: 16
+    trajectory_length: 30
+    velocity_low: -0.15
+    velocity_high: 0.15
+
+  model:
+    n_units: 64
+    mlp_layers: 3
+    mlp_hidden_width: 128
+    trainable_initial_state: true
+
+  loss:
+    sigma_x: 0.05
+    sigma_g: 0.4
+    lambda_sep: 1.0
+    lambda_inv: 0.1
+    lambda_cap: 0.5
+    lambda_coniso: 1.0
+    pairwise_reduction: mean
+    chunk_size: 256
+
+  train:
+    optimizer: adamw
+    scheduler: reduce_on_plateau
+    scheduler_monitor: loss/total
+    scheduler_factor: 0.5
+    scheduler_patience: 250
+    lr: 0.00002
+    weight_decay: 0.0
+    grad_clip_norm: 0.1
+    accumulate_grad_batches: 2
+    max_optimizer_steps: 5000
+    checkpoint_every: 500
+    log_every: 10
+
+variants:
+  - name: baseline
+    description: Medium sanity-run baseline used for matched ablations.
+    overrides: {}
+
+  - name: no_capacity
+    description: Set capacity loss weight to zero.
+    overrides:
+      loss:
+        lambda_cap: 0.0
+
+  - name: reduced_sigma_g
+    description: Reduce neural distance scale for place-cell-like response check.
+    overrides:
+      loss:
+        sigma_g: 0.2
+
+  - name: no_separation
+    description: Set separation loss weight to zero.
+    overrides:
+      loss:
+        lambda_sep: 0.0
+
+  - name: no_invariance
+    description: Set path-invariance loss weight to zero.
+    overrides:
+      loss:
+        lambda_inv: 0.0
+
+  - name: no_conformal_isometry
+    description: Set conformal-isometry loss weight to zero.
+    overrides:
+      loss:
+        lambda_coniso: 0.0
+
+  - name: no_permutation_augmentation
+    description: Declared paper ablation; not runnable until data config supports non-permuted batches.
+    enabled: false
+    reason: Current training config has no field for disabling velocity permutation augmentation.
+    overrides: {}
