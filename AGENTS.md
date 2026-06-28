@@ -57,6 +57,7 @@ Repo-specific instructions for agents working in this repository.
 - `configs/ablations.yaml` is the ablation orchestration plan; `no_permutation_augmentation` uses `data.augmentation_mode: identity`.
 - `docs/sic-implementation-plan.md` owns implementation contracts and phase boundaries.
 - `docs/sic-reproduction-plan.md` owns paper-material rationale and reproduction scope.
+- `docs/runbook.md` owns medium, paper-scale, and ablation run commands plus artifact checklists.
 - `.work/sic-reproduction/source/` is paper source material only; do not import it as project code.
 
 ## Finish Checks

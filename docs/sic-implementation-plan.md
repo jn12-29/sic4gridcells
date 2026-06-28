@@ -1,14 +1,13 @@
 # SIC Grid Cells 实现计划
 
-## 目标与当前环境
+## 目标与环境约定
 
 目标是在当前仓库实现一个 plain PyTorch 版 SIC 复现项目，先完成可测试的核心训练链路，再扩展到论文级训练、评估和消融。依据文档是 `docs/sic-reproduction-plan.md` 和 `.work/sic-reproduction/source/` 中的论文 LaTeX 源码。
 
-当前环境状态：
+环境约定：
 
-- 已创建 `.venv/`。
-- `.venv` 中已安装 `torch 2.12.1+cu130`、`numpy 2.5.0`、`scipy 1.18.0`、`matplotlib 3.11.0`、`pyyaml 6.0.3`、`pytest 9.1.1`、`tensorboard 2.20.0`、`scikit-learn 1.9.0` 等依赖。
-- `.venv/bin/python` 能导入上述依赖，`torch.cuda.is_available()` 为 `True`，可见 8 张 CUDA GPU。
+- 使用仓库内 `.venv/bin/python` 运行 Python 命令。
+- 项目依赖以 `pyproject.toml` 为权威，安装或刷新依赖时使用 `uv pip install --python .venv/bin/python -e .`。
 - 注意：不要裸跑 `uv pip install ...`；本机上它会使用当前 conda 环境。后续安装必须使用 `uv pip install --python .venv/bin/python ...`。
 
 ## 非目标

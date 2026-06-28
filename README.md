@@ -2,7 +2,7 @@
 
 Plain PyTorch reproduction scaffold for the SIC grid-cell model from Schaeffer et al., "Self-Supervised Learning of Representations for Space Generates Multi-Modular Grid Cells".
 
-The current repository implements a runnable SIC reproduction slice: SIC velocity permutation batches, velocity-conditioned RNN rollout, separation/invariance/capacity/conformal-isometry losses, training, checkpoint evaluation, ratemaps, SAC/grid scoring, smoke/medium/paper configs, ablation orchestration, and unit tests. See `docs/sic-implementation-plan.md` and `docs/sic-reproduction-plan.md` for reproduction scope and remaining paper-level work.
+The current repository implements a runnable SIC reproduction slice: SIC velocity permutation batches, velocity-conditioned RNN rollout, separation/invariance/capacity/conformal-isometry losses, training, checkpoint evaluation, ratemaps, SAC/grid scoring, smoke/medium/paper configs, ablation orchestration, and unit tests. See `docs/runbook.md` for longer run commands, and `docs/sic-implementation-plan.md` plus `docs/sic-reproduction-plan.md` for reproduction scope and remaining paper-level work.
 
 ## Setup
 
@@ -16,7 +16,7 @@ uv pip install --python .venv/bin/python -e .
 If dependencies need to be installed or refreshed, keep targeting the local environment explicitly:
 
 ```bash
-uv pip install --python .venv/bin/python torch numpy scipy matplotlib pyyaml tqdm tensorboard pytest
+uv pip install --python .venv/bin/python -e .
 ```
 
 Do not use bare `uv pip install ...` in this workspace; on this machine it can install into the active conda environment instead of `.venv`.
@@ -58,7 +58,7 @@ Evaluate the smoke checkpoint:
 .venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16 --seed 0
 ```
 
-The evaluation writes `summary.json`, `config.yaml`, and per-arena artifacts such as `ratemaps.npz`, `occupancy.npz`, `sacs.npz`, `grid_metrics.npz`, `grid_stats.csv`, `grid_stats.json`, `module_summary.csv`, `module_summary.json`, `trajectory_stats.json`, `pairwise_distance_stats.csv`, `pairwise_distance_stats.json`, `pairwise_distance.png`, `fourier_stats.csv`, `fourier_stats.json`, `phase_summary.csv`, `phase_summary.json`, `state_space_summary.csv`, `state_space_summary.json`, `state_space_modules.npz`, `grid_score_60_histogram.png`, `scale_meters_histogram.png`, `summary.png`, `ratemaps.pdf`, and `sacs.pdf`. Unvisited ratemap bins are stored as `NaN`; coverage is determined from `occupancy_counts`, visited zero responses remain `0.0`, and non-finite visited responses are reported as invalid in the JSON summaries. SAC/grid scoring uses finite ratemap bins as its overlap mask, grid scale is reported in both SAC pixels and meters, and random-walk step scale is arena-size based rather than shrinking with `--steps`.
+The evaluation writes `summary.json`, `config.yaml`, and per-arena ratemap, SAC, grid-stat, trajectory, pairwise-distance, Fourier, phase, state-space, PDF, and PNG artifacts under `results/smoke/eval/`. See `docs/runbook.md` for the artifact checklist used for medium, paper-scale, and ablation runs.
 
 Evaluation defaults to `--start-mode origin`, which keeps reset model state aligned with position bins. `--start-mode uniform` is only valid for checkpoints trained with `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`. If `--seed` is omitted, evaluation uses the checkpoint config seed.
 
@@ -80,7 +80,7 @@ Important training semantics:
 
 ```text
 configs/                  YAML training and ablation configs
-docs/                     reproduction and implementation plans
+docs/                     runbook, reproduction plan, and implementation plan
 scripts/train_sic.py      thin training CLI entry point
 scripts/eval_checkpoint.py checkpoint evaluation CLI
 scripts/run_ablations.py  ablation orchestration CLI
