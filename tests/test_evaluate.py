@@ -60,6 +60,7 @@ def test_evaluate_checkpoint_writes_artifacts(tmp_path: Path) -> None:
     )
     arena_dir = result.arena_dirs[1.0]
     assert (arena_dir / "ratemaps.npz").exists()
+    assert (arena_dir / "rollout_arrays.npz").exists()
     assert (arena_dir / "occupancy.npz").exists()
     assert (arena_dir / "sacs.npz").exists()
     assert (arena_dir / "grid_metrics.npz").exists()
@@ -89,9 +90,13 @@ def test_evaluate_checkpoint_writes_artifacts(tmp_path: Path) -> None:
     _load_strict_json(arena_dir / "phase_summary.json")
     _load_strict_json(arena_dir / "state_space_summary.json")
     occupancy = np.load(arena_dir / "occupancy.npz")["occupancy_counts"]
+    rollout_arrays = np.load(arena_dir / "rollout_arrays.npz")
     grid_metrics = np.load(arena_dir / "grid_metrics.npz")
     assert occupancy.shape == (6, 6)
     assert occupancy.sum() > 0
+    assert rollout_arrays["positions"].shape == (3, 8, 2)
+    assert rollout_arrays["velocities"].shape == (3, 8, 2)
+    assert rollout_arrays["hidden_states"].shape == (3, 8, 4)
     assert grid_metrics["scale_meters"].shape == (4,)
     assert grid_metrics["module_ids"].shape == (4,)
     assert all("scale" in row for row in grid_stats)
@@ -110,6 +115,9 @@ def test_evaluate_checkpoint_writes_artifacts(tmp_path: Path) -> None:
     )
     arena_summary = summary["arena_summaries"][0]
     assert summary["evaluation_seed"] == 0
+    assert summary["trajectory_mode"] == "reflect"
+    trajectory_stats = _load_strict_json(arena_dir / "trajectory_stats.json")
+    assert trajectory_stats["trajectory_mode"] == "reflect"
     assert "dead_units" not in arena_summary
     assert arena_summary["visited_bins"] == int((occupancy > 0).sum())
     assert arena_summary["total_bins"] == 36
@@ -399,6 +407,33 @@ def test_seeded_random_walk_is_reproducible() -> None:
     assert torch.allclose(velocities_a, velocities_b)
 
 
+def test_smooth_avoid_walls_random_walk_is_seeded_and_bounded() -> None:
+    generator_a = torch.Generator().manual_seed(12)
+    generator_b = torch.Generator().manual_seed(12)
+
+    positions_a, velocities_a = _sample_bounded_random_walk(
+        64,
+        2.0,
+        device=torch.device("cpu"),
+        start_mode="origin",
+        trajectory_mode="smooth_avoid_walls",
+        generator=generator_a,
+    )
+    positions_b, velocities_b = _sample_bounded_random_walk(
+        64,
+        2.0,
+        device=torch.device("cpu"),
+        start_mode="origin",
+        trajectory_mode="smooth_avoid_walls",
+        generator=generator_b,
+    )
+
+    assert torch.allclose(positions_a, positions_b)
+    assert torch.allclose(velocities_a, velocities_b)
+    assert torch.max(torch.abs(positions_a)) <= 1.0
+    assert torch.linalg.norm(velocities_a, dim=1).max() <= _evaluation_step_scale(2.0) + 1e-6
+
+
 def test_random_walk_velocity_scale_is_bounded_by_arena_scale() -> None:
     positions, velocities = _sample_bounded_random_walk(
         32,
@@ -409,6 +444,35 @@ def test_random_walk_velocity_scale_is_bounded_by_arena_scale() -> None:
 
     assert positions.shape == (32, 2)
     assert torch.linalg.norm(velocities, dim=1).max() <= _evaluation_step_scale(2.0) + 1e-6
+
+
+def test_invalid_trajectory_mode_is_rejected() -> None:
+    with pytest.raises(ValueError, match="trajectory_mode"):
+        _sample_bounded_random_walk(
+            4,
+            1.0,
+            device=torch.device("cpu"),
+            trajectory_mode="future_mode",
+        )
+
+
+def test_evaluate_checkpoint_rejects_invalid_trajectory_mode(tmp_path: Path) -> None:
+    checkpoint_path = _write_checkpoint(
+        tmp_path,
+        ModelConfig(n_units=4, mlp_layers=1, mlp_hidden_width=8),
+    )
+
+    with pytest.raises(ValueError, match="trajectory_mode"):
+        evaluate_checkpoint(
+            checkpoint_path,
+            tmp_path / "eval-invalid-trajectory",
+            device="cpu",
+            arena_sizes=(1.0,),
+            nbins=4,
+            n_trajectories=1,
+            steps_per_trajectory=4,
+            trajectory_mode="future_mode",
+        )
 
 
 def test_uniform_start_requires_initial_position_encoder(tmp_path: Path) -> None:

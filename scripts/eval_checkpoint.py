@@ -26,6 +26,12 @@ def parse_args() -> argparse.Namespace:
         default="origin",
         help="Initial position mode for evaluation trajectories.",
     )
+    parser.add_argument(
+        "--trajectory-mode",
+        choices=("reflect", "smooth_avoid_walls"),
+        default="reflect",
+        help="Evaluation trajectory sampler.",
+    )
     return parser.parse_args()
 
 
@@ -41,6 +47,7 @@ def main() -> None:
         n_trajectories=args.trajectories,
         steps_per_trajectory=args.steps,
         start_mode=args.start_mode,
+        trajectory_mode=args.trajectory_mode,
         seed=args.seed,
     )
     print(f"finished output_dir={result.output_dir}")

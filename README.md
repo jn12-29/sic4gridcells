@@ -52,6 +52,13 @@ The smoke run writes:
 
 `results/` is ignored by git.
 
+Resume an interrupted run with the same config. To extend beyond the
+checkpoint config, change only `train.max_optimizer_steps`:
+
+```bash
+.venv/bin/python scripts/train_sic.py --config configs/medium.yaml --resume results/medium/checkpoints/step_500.pt
+```
+
 Evaluate the smoke checkpoint:
 
 ```bash
@@ -61,6 +68,7 @@ Evaluate the smoke checkpoint:
 The evaluation writes `summary.json`, `config.yaml`, and per-arena ratemap, SAC, grid-stat, trajectory, pairwise-distance, Fourier, phase, state-space, PDF, and PNG artifacts under `results/smoke/eval/`. See `docs/runbook.md` for the artifact checklist used for medium, paper-scale, and ablation runs.
 
 Evaluation defaults to `--start-mode origin`, which keeps reset model state aligned with position bins. `--start-mode uniform` is only valid for checkpoints trained with `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`. If `--seed` is omitted, evaluation uses the checkpoint config seed.
+Evaluation also defaults to `--trajectory-mode reflect` for backward-compatible bounded walks. Use `--trajectory-mode smooth_avoid_walls` for smoother wall-avoiding diagnostic trajectories.
 
 ## Configs
 

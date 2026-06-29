@@ -10,17 +10,26 @@ Use `.venv/bin/python` for all Python commands in this repository. Keep generate
 .venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16 --seed 0
 ```
 
-The smoke evaluation writes `summary.json`, `config.yaml`, and one per-arena directory such as `arena_1p0/`. Per-arena artifacts include `ratemaps.npz`, `occupancy.npz`, `sacs.npz`, `grid_metrics.npz`, `grid_stats.csv`, `grid_stats.json`, `module_summary.csv`, `module_summary.json`, `trajectory_stats.json`, `pairwise_distance_stats.csv`, `pairwise_distance_stats.json`, `pairwise_distance.png`, `fourier_stats.csv`, `fourier_stats.json`, `phase_summary.csv`, `phase_summary.json`, `state_space_summary.csv`, `state_space_summary.json`, `state_space_modules.npz`, `grid_score_60_histogram.png`, `scale_meters_histogram.png`, `summary.png`, `ratemaps.pdf`, and `sacs.pdf`.
+The smoke evaluation writes `summary.json`, `config.yaml`, and one per-arena directory such as `arena_1p0/`. Per-arena artifacts include `rollout_arrays.npz`, `ratemaps.npz`, `occupancy.npz`, `sacs.npz`, `grid_metrics.npz`, `grid_stats.csv`, `grid_stats.json`, `module_summary.csv`, `module_summary.json`, `trajectory_stats.json`, `pairwise_distance_stats.csv`, `pairwise_distance_stats.json`, `pairwise_distance.png`, `fourier_stats.csv`, `fourier_stats.json`, `phase_summary.csv`, `phase_summary.json`, `state_space_summary.csv`, `state_space_summary.json`, `state_space_modules.npz`, `grid_score_60_histogram.png`, `scale_meters_histogram.png`, `summary.png`, `ratemaps.pdf`, and `sacs.pdf`.
 
 Unvisited ratemap bins are stored as `NaN`; coverage is determined from `occupancy_counts`; visited zero responses remain `0.0`; non-finite visited responses are reported as invalid in JSON summaries. SAC/grid scoring uses finite ratemap bins as its overlap mask, grid scale is reported in both SAC pixels and meters, and random-walk step scale is arena-size based rather than shrinking with `--steps`.
 
 Evaluation defaults to `--start-mode origin`, which keeps reset model state aligned with position bins. `--start-mode uniform` is only valid for checkpoints trained with `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`. If `--seed` is omitted, evaluation uses the checkpoint config seed.
+Evaluation defaults to `--trajectory-mode reflect`, the original bounded random-walk sampler. Use `--trajectory-mode smooth_avoid_walls` for smoother wall-avoiding diagnostic trajectories closer to the paper's evaluation description.
 
 ## Medium sanity run
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/train_sic.py --config configs/medium.yaml
 .venv/bin/python scripts/eval_checkpoint.py --checkpoint results/medium/checkpoints/step_5000.pt --output-dir results/medium/eval --arena-sizes 2.0,3.0,4.0 --nbins 32 --trajectories 32 --steps 256 --seed 0
+```
+
+If training is interrupted, resume from the latest checkpoint with the same
+config. To extend beyond the checkpoint config, change only
+`train.max_optimizer_steps`.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/train_sic.py --config configs/medium.yaml --resume results/medium/checkpoints/step_500.pt
 ```
 
 Check `results/medium/eval/summary.json`, each `arena_*/module_summary.csv`, `arena_*/grid_stats.csv`, `arena_*/pairwise_distance_stats.csv`, `arena_*/pairwise_distance.png`, `arena_*/fourier_stats.csv`, `arena_*/phase_summary.csv`, `arena_*/state_space_summary.csv`, `arena_*/grid_score_60_histogram.png`, and `arena_*/scale_meters_histogram.png`.

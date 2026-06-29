@@ -28,6 +28,8 @@ from sic4gridcells.plotting import (
 ZERO_RESPONSE_EPS = 1e-12
 EVAL_STEP_SCALE_FRACTION = 0.15
 EVAL_TURN_STD_RADIANS = 0.35
+EVAL_WALL_MARGIN_FRACTION = 0.15
+VALID_TRAJECTORY_MODES = {"reflect", "smooth_avoid_walls"}
 GRID_MODULE_SCORE_THRESHOLD = 0.0
 GRID_MODULE_SCALE_RATIO = 1.2
 PAIRWISE_DISTANCE_SAMPLE_PAIRS = 20000
@@ -50,6 +52,7 @@ def evaluate_checkpoint(
     n_trajectories: int = 32,
     steps_per_trajectory: int = 256,
     start_mode: str = "origin",
+    trajectory_mode: str = "reflect",
     seed: int | None = None,
 ) -> EvaluationResult:
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -60,6 +63,11 @@ def evaluate_checkpoint(
     model.eval()
     if start_mode not in {"origin", "uniform"}:
         raise ValueError("start_mode must be 'origin' or 'uniform'")
+    if trajectory_mode not in VALID_TRAJECTORY_MODES:
+        raise ValueError(
+            "trajectory_mode must be one of: "
+            + ", ".join(sorted(VALID_TRAJECTORY_MODES))
+        )
     if start_mode == "uniform" and cfg.model.initial_position_encoding != "additive_mlp":
         raise ValueError(
             "start_mode='uniform' requires a checkpoint trained with "
@@ -92,6 +100,7 @@ def evaluate_checkpoint(
                 n_trajectories=n_trajectories,
                 steps_per_trajectory=steps_per_trajectory,
                 start_mode=start_mode,
+                trajectory_mode=trajectory_mode,
                 generator=generator,
             )
             scorer = GridScorer(
@@ -124,7 +133,11 @@ def evaluate_checkpoint(
                 grid_metrics.orientation_degrees,
                 scores.score_60,
             )
-            trajectory_stats = _summarize_trajectory_stats(positions, velocities)
+            trajectory_stats = _summarize_trajectory_stats(
+                positions,
+                velocities,
+                trajectory_mode=trajectory_mode,
+            )
             pairwise_stats = _summarize_pairwise_neural_distances(
                 positions,
                 hidden_states,
@@ -149,6 +162,9 @@ def evaluate_checkpoint(
             )
             _write_arena_artifacts(
                 arena_dir,
+                positions=positions,
+                velocities=velocities,
+                hidden_states=hidden_states,
                 ratemaps=ratemaps,
                 occupancy_counts=occupancy_counts,
                 sacs=scores.sacs,
@@ -199,6 +215,7 @@ def evaluate_checkpoint(
                 "checkpoint": str(Path(checkpoint_path)),
                 "config": asdict(cfg),
                 "evaluation_seed": eval_seed,
+                "trajectory_mode": trajectory_mode,
                 "arena_summaries": summary_rows,
             },
             handle,
@@ -217,6 +234,7 @@ def _run_bounded_random_walks(
     n_trajectories: int,
     steps_per_trajectory: int,
     start_mode: str,
+    trajectory_mode: str = "reflect",
     generator: torch.Generator | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     batch_positions = []
@@ -228,6 +246,7 @@ def _run_bounded_random_walks(
             arena_size,
             device=device,
             start_mode=start_mode,
+            trajectory_mode=trajectory_mode,
             generator=generator,
         )
         initial_positions = positions.new_zeros((1, 2))
@@ -257,8 +276,14 @@ def _sample_bounded_random_walk(
     *,
     device: torch.device,
     start_mode: str = "origin",
+    trajectory_mode: str = "reflect",
     generator: torch.Generator | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if trajectory_mode not in VALID_TRAJECTORY_MODES:
+        raise ValueError(
+            "trajectory_mode must be one of: "
+            + ", ".join(sorted(VALID_TRAJECTORY_MODES))
+        )
     half = arena_size / 2.0
     positions = torch.empty(steps, 2, device=device)
     velocities = torch.empty(steps, 2, device=device)
@@ -275,11 +300,21 @@ def _sample_bounded_random_walk(
             heading = (
                 heading
                 + torch.randn((), device=device, generator=generator) * EVAL_TURN_STD_RADIANS
-            )
+        )
         speed = (0.5 + 0.5 * torch.rand((), device=device, generator=generator)) * step_scale
-        step = torch.stack((torch.cos(heading), torch.sin(heading))) * speed
-        next_position = current + step
-        next_position = _reflect_into_box(next_position, half)
+        if trajectory_mode == "smooth_avoid_walls":
+            heading, next_position = _smooth_wall_avoiding_step(
+                current,
+                heading,
+                speed,
+                half,
+                step_scale,
+                generator=generator,
+            )
+        else:
+            step = torch.stack((torch.cos(heading), torch.sin(heading))) * speed
+            next_position = current + step
+            next_position = _reflect_into_box(next_position, half)
         velocities[index] = next_position - current
         positions[index] = next_position
         current = next_position
@@ -297,6 +332,34 @@ def _reflect_into_box(position: torch.Tensor, half_width: float) -> torch.Tensor
     under = reflected < -half_width
     reflected = torch.where(under, -2.0 * half_width - reflected, reflected)
     return reflected
+
+
+def _smooth_wall_avoiding_step(
+    current: torch.Tensor,
+    heading: torch.Tensor,
+    speed: torch.Tensor,
+    half_width: float,
+    step_scale: float,
+    *,
+    generator: torch.Generator | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    margin = min(half_width * EVAL_WALL_MARGIN_FRACTION, step_scale)
+    soft_limit = max(half_width - margin, half_width * 0.5)
+    candidate_heading = heading
+    for _ in range(8):
+        step = torch.stack((torch.cos(candidate_heading), torch.sin(candidate_heading))) * speed
+        next_position = current + step
+        if bool((next_position.abs() <= soft_limit).all()):
+            return candidate_heading, next_position
+        center_heading = torch.atan2(-current[1], -current[0])
+        candidate_heading = (
+            center_heading
+            + torch.randn((), device=current.device, generator=generator)
+            * (0.5 * EVAL_TURN_STD_RADIANS)
+        )
+    step = torch.stack((torch.cos(candidate_heading), torch.sin(candidate_heading))) * speed
+    next_position = torch.clamp(current + step, min=-soft_limit, max=soft_limit)
+    return candidate_heading, next_position
 
 
 def _accumulate_ratemaps(
@@ -459,11 +522,14 @@ def _summarize_modules(
 def _summarize_trajectory_stats(
     positions: np.ndarray,
     velocities: np.ndarray,
+    *,
+    trajectory_mode: str,
 ) -> dict[str, object]:
     del positions
     speeds = np.linalg.norm(velocities.reshape(-1, 2), axis=1)
     turn_angles = _turn_angles_degrees(velocities)
     return {
+        "trajectory_mode": trajectory_mode,
         "trajectory_count": int(velocities.shape[0]),
         "steps_per_trajectory": int(velocities.shape[1]),
         "mean_speed": _json_float(_safe_nanmean(speeds)),
@@ -760,6 +826,9 @@ def _summarize_state_space(
 def _write_arena_artifacts(
     arena_dir: Path,
     *,
+    positions: np.ndarray,
+    velocities: np.ndarray,
+    hidden_states: np.ndarray,
     ratemaps: np.ndarray,
     occupancy_counts: np.ndarray,
     sacs: np.ndarray,
@@ -781,6 +850,12 @@ def _write_arena_artifacts(
     mask_90: list[tuple[float, float]],
     unit_response_stats: list[dict[str, object]],
 ) -> None:
+    np.savez_compressed(
+        arena_dir / "rollout_arrays.npz",
+        positions=positions.astype(np.float32, copy=False),
+        velocities=velocities.astype(np.float32, copy=False),
+        hidden_states=hidden_states.astype(np.float32, copy=False),
+    )
     np.savez_compressed(arena_dir / "ratemaps.npz", ratemaps=ratemaps)
     np.savez_compressed(arena_dir / "occupancy.npz", occupancy_counts=occupancy_counts)
     np.savez_compressed(arena_dir / "sacs.npz", sacs=sacs)
