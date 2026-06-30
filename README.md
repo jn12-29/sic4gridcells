@@ -2,7 +2,7 @@
 
 Plain PyTorch reproduction scaffold for the SIC grid-cell model from Schaeffer et al., "Self-Supervised Learning of Representations for Space Generates Multi-Modular Grid Cells".
 
-The current repository implements a runnable SIC reproduction slice: SIC velocity permutation batches, velocity-conditioned RNN rollout, separation/invariance/capacity/conformal-isometry losses, training, checkpoint evaluation, ratemaps, SAC/grid scoring, smoke/medium/paper configs, ablation orchestration, and unit tests. See `docs/runbook.md` for longer run commands, and `docs/sic-implementation-plan.md` plus `docs/sic-reproduction-plan.md` for reproduction scope and remaining paper-level work.
+The current repository implements a runnable SIC reproduction slice: SIC velocity permutation batches, velocity-conditioned RNN rollout, separation/invariance/capacity/conformal-isometry losses, training, checkpoint evaluation, evaluation validation, ratemaps, SAC/grid scoring, smoke/medium/paper configs, ablation orchestration, and unit tests. See `docs/runbook.md` for longer run commands, and `docs/sic-implementation-plan.md` plus `docs/sic-reproduction-plan.md` for reproduction scope and remaining paper-level work.
 
 ## Setup
 
@@ -85,6 +85,14 @@ The evaluation CLI also accepts `--log-level`; runtime logs go to `run.log` and 
 Evaluation also refuses to reuse an existing output directory unless
 `--overwrite-output` is passed.
 
+Validate the smoke evaluation artifacts with relaxed quality thresholds:
+
+```bash
+uv run python scripts/validate_eval.py --output-dir results/smoke/eval --arena-sizes 1.0 --min-coverage 0.0 --min-active-units 0 --min-module-count 0
+```
+
+The validation CLI checks required artifacts plus coverage, active-unit, invalid-response, and module evidence thresholds. Default thresholds are conservative and are intended for claim gates; validation blockers mean the evaluation output is incomplete or insufficient evidence, not that training or evaluation crashed.
+
 ## Configs
 
 - `configs/smoke.yaml`: small CPU smoke run for tests and workflow checks.
@@ -108,6 +116,7 @@ configs/                  YAML training and ablation configs
 docs/                     runbook, reproduction plan, and implementation plan
 scripts/train_sic.py      thin training CLI entry point
 scripts/eval_checkpoint.py checkpoint evaluation CLI
+scripts/validate_eval.py evaluation artifact and quality validation CLI
 scripts/run_ablations.py  ablation orchestration CLI
 src/sic4gridcells/        package source
 tests/                    pytest suite
@@ -121,6 +130,7 @@ Key modules:
 - `sic4gridcells.losses`: SIC losses and tiny naive pairwise implementation for tests.
 - `sic4gridcells.train`: training loop, metrics, TensorBoard logging, checkpointing.
 - `sic4gridcells.evaluate`: checkpoint reload, bounded random-walk evaluation, artifact writing.
+- `sic4gridcells.validation`: evaluation artifact completeness and quality-gate reporting.
 - `sic4gridcells.analysis`: ratemap, SAC, grid score, and grid-scale utilities.
 - `sic4gridcells.plotting`: PDF and PNG evaluation figures.
 - `sic4gridcells.runtime`: output safety, atomic checkpoint writes, latest-checkpoint discovery, and runtime diagnostics.

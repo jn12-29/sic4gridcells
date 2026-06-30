@@ -28,6 +28,8 @@ Repo-specific instructions for agents working in this repository.
 | Run evaluation tests | `uv run python -m pytest tests/test_analysis.py tests/test_evaluate.py` |
 | Show evaluation CLI help | `uv run python scripts/eval_checkpoint.py --help` |
 | Evaluate smoke checkpoint | `uv run python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16 --overwrite-output` |
+| Run evaluation validation tests | `uv run python -m pytest tests/test_validation.py` |
+| Validate smoke evaluation output | `uv run python scripts/validate_eval.py --output-dir results/smoke/eval --arena-sizes 1.0 --min-coverage 0.0 --min-active-units 0 --min-module-count 0` |
 | Show ablation CLI help | `uv run python scripts/run_ablations.py --help` |
 | Dry-run ablations | `uv run python scripts/run_ablations.py --config configs/ablations.yaml --dry-run --overwrite-output` |
 
@@ -46,6 +48,7 @@ Repo-specific instructions for agents working in this repository.
 - `scripts/eval_checkpoint.py --start-mode origin` is the default for no-encoder checkpoints; `--start-mode uniform` requires `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`.
 - Ratemap empty bins remain `NaN`; visited zero responses remain `0.0`. Evaluation writes `occupancy.npz` for coverage and reports `units_without_coverage`, `zero_response_units`, `invalid_response_units`, and `active_units` instead of using `dead_units` as a coverage proxy.
 - SAC/grid scoring must use finite ratemap bins as its overlap mask; evaluation walk step scale must not shrink as `--steps` increases.
+- `scripts/validate_eval.py` reads an existing evaluation output directory, reports artifact and quality blockers, and exits nonzero on blockers unless `--allow-fail` is passed.
 - Evaluation artifacts live under caller-selected `results/` output directories.
 
 ## File Ownership

@@ -43,11 +43,14 @@ tests/test_train_step.py
 
 ```text
 src/sic4gridcells/evaluate.py
+src/sic4gridcells/validation.py
 src/sic4gridcells/analysis.py
 src/sic4gridcells/plotting.py
 scripts/eval_checkpoint.py
+scripts/validate_eval.py
 tests/test_analysis.py
 tests/test_evaluate.py
+tests/test_validation.py
 ```
 
 实验编排文件：
@@ -205,6 +208,14 @@ docs/runbook.md
 - Training 在 backward 前检查 floating loss tensors 是否 finite，并在 gradient clipping 时启用 non-finite gradient error。
 - `scripts/run_ablations.py --resume-existing` 从每个 variant 的 latest checkpoint 继续；`--skip-completed` 跳过 latest checkpoint 已达到 `train.max_optimizer_steps` 的 variant。
 
+### Evaluation validation
+
+- `src/sic4gridcells/validation.py` 读取既有 evaluation output directory，并返回 JSON-serializable `ValidationReport`。
+- `scripts/validate_eval.py` 是薄 CLI；它不重跑 evaluation，只检查 `summary.json`、per-arena required artifacts、coverage、active units、invalid response units 和 module evidence。
+- Validation blocker 表示 artifact 不完整或证据不足；不是 training/evaluation 崩溃信号。
+- CLI 默认在存在 blockers 时返回非零；`--allow-fail` 只用于保存诊断报告且不阻断 shell workflow。
+- Smoke validation 可以放宽 quality thresholds；paper-claim validation 应显式要求 `--arena-sizes 2.0,3.0,4.0` 并保存 `validation.json`。
+
 ## 分阶段执行计划
 
 ### 阶段 0：项目启动
@@ -268,6 +279,7 @@ uv run python scripts/train_sic.py --config configs/smoke.yaml
 - `src/sic4gridcells/analysis.py` 最小移植 GridScorer 风格的 ratemap、SAC、grid score 和 grid scale 逻辑。
 - `src/sic4gridcells/plotting.py` 输出 `summary.png`、`ratemaps.pdf`、`sacs.pdf` 和指标直方图。
 - `scripts/eval_checkpoint.py` 是薄 CLI；训练 config 从 checkpoint 中读取，不另传 `--config`。
+- `scripts/validate_eval.py` 是薄 CLI；它读取 evaluation output 并输出 artifact/quality blockers。
 - 评估输出包含 `run.log` 和 `eval_events.jsonl`，并继续写出 `summary.json`、`config.yaml` 和 per-arena artifact。
 - `ratemaps.npz` 将未访问空间 bin 保存为 `NaN`；访问过但响应为零的 bin 保持 `0.0`。
 - `occupancy.npz` 保存 `occupancy_counts`，是 coverage 指标的 source of truth；访问过的 bin 若出现非有限响应，归类为 invalid response，而不是 coverage gap。
@@ -283,12 +295,15 @@ uv run python scripts/train_sic.py --config configs/smoke.yaml
 ```bash
 uv run python -m pytest tests/test_analysis.py tests/test_evaluate.py
 uv run python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16
+uv run python -m pytest tests/test_validation.py
+uv run python scripts/validate_eval.py --output-dir results/smoke/eval --arena-sizes 1.0 --min-coverage 0.0 --min-active-units 0 --min-module-count 0
 ```
 
 验收：
 
 - smoke checkpoint 可 reload。
 - eval 输出 ratemap arrays、occupancy counts、grid stats JSON/CSV、module summary、pairwise neural-distance stats、trajectory stats、至少一个 PDF 或 PNG。
+- validation CLI 可区分 artifact/quality blockers 和通过的 relaxed smoke artifact check。
 - 评估代码不读取或生成 supervised target。
 
 ### 阶段 4：中等规模 sanity run
@@ -302,7 +317,8 @@ uv run python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 uv run python scripts/train_sic.py --config configs/medium.yaml
-uv run python scripts/eval_checkpoint.py --checkpoint <medium-checkpoint> --output-dir results/medium/eval
+uv run python scripts/eval_checkpoint.py --checkpoint results/medium/checkpoints/step_5000.pt --output-dir results/medium/eval --arena-sizes 2.0,3.0,4.0 --nbins 32 --trajectories 32 --steps 256 --seed 0
+uv run python scripts/validate_eval.py --output-dir results/medium/eval --arena-sizes 2.0,3.0,4.0 --json-output results/medium/eval/validation.json --allow-fail
 ```
 
 验收：
@@ -324,6 +340,8 @@ uv run python scripts/eval_checkpoint.py --checkpoint <medium-checkpoint> --outp
 
 ```bash
 CUDA_VISIBLE_DEVICES=<id> uv run python scripts/train_sic.py --config configs/sic_paper.yaml
+uv run python scripts/eval_checkpoint.py --checkpoint results/sic_paper/checkpoints/step_2000000.pt --output-dir results/sic_paper/eval --arena-sizes 2.0,3.0,4.0 --nbins 32 --trajectories 32 --steps 256 --seed 0
+uv run python scripts/validate_eval.py --output-dir results/sic_paper/eval --arena-sizes 2.0,3.0,4.0 --json-output results/sic_paper/eval/validation.json
 uv run python scripts/run_ablations.py --config configs/ablations.yaml
 ```
 
@@ -356,7 +374,7 @@ uv run python -m pytest
 
 ## 当前后续顺序
 
-1. 跑中等规模 sanity training，并用 `scripts/eval_checkpoint.py` 评估生成的 checkpoint。
+1. 跑中等规模 sanity training，并用 `scripts/eval_checkpoint.py` 评估生成的 checkpoint，再用 `scripts/validate_eval.py` 保存 validation report。
 2. 用 `configs/ablations.yaml` 和 `scripts/run_ablations.py` 执行 matched ablations。
 3. 按 `docs/runbook.md` 记录 paper-scale throughput、GPU memory、checkpoint 和 evaluation cadence。
 4. 基于 paper-scale 结果完成 toroidal manifold confirmation 和论文图级 figure selection。
