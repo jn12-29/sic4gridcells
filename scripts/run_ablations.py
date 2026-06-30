@@ -24,6 +24,12 @@ from sic4gridcells.logging_utils import (
     elapsed_seconds,
     log_file_context,
 )
+from sic4gridcells.runtime import (
+    ABLATION_OUTPUT_MARKERS,
+    discover_latest_checkpoint,
+    is_output_completed,
+    prepare_output_dir,
+)
 from sic4gridcells.train import RunResult, train
 
 logger = logging.getLogger("sic4gridcells.run_ablations")
@@ -62,6 +68,21 @@ def parse_args() -> argparse.Namespace:
         help="Skip configured post-training evaluation.",
     )
     parser.add_argument(
+        "--resume-existing",
+        action="store_true",
+        help="Resume each variant from its latest checkpoint when one exists.",
+    )
+    parser.add_argument(
+        "--skip-completed",
+        action="store_true",
+        help="Skip variants whose latest checkpoint already reached max_optimizer_steps.",
+    )
+    parser.add_argument(
+        "--overwrite-output",
+        action="store_true",
+        help="Allow fresh variant runs and aggregate logs to reuse existing output directories.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=VALID_LOG_LEVELS,
@@ -73,7 +94,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     with cli_logging_context(args.log_level):
-        results = run_ablations(args.config, dry_run=args.dry_run, skip_evaluation=args.skip_eval)
+        results = run_ablations(
+            args.config,
+            dry_run=args.dry_run,
+            skip_evaluation=args.skip_eval,
+            resume_existing=args.resume_existing,
+            skip_completed=args.skip_completed,
+            overwrite_output=args.overwrite_output,
+        )
     for name, result in results.items():
         if result.status == "validated":
             print(f"validated {name}: {result.config_path}")
@@ -94,9 +122,11 @@ def run_ablations(
     config_path: str | Path,
     dry_run: bool = False,
     skip_evaluation: bool = False,
+    resume_existing: bool = False,
+    skip_completed: bool = False,
+    overwrite_output: bool = False,
 ) -> dict[str, AblationResult]:
     plan = load_ablation_plan(config_path)
-    runs = materialize_run_configs(plan)
     results: dict[str, AblationResult] = {}
     continue_on_error = bool(plan.get("continue_on_error", False))
     evaluation_cfg = plan.get("evaluation", {})
@@ -105,7 +135,13 @@ def run_ablations(
         and bool(evaluation_cfg.get("enabled", False))
         and not skip_evaluation
     )
-    output_root = Path(str(plan.get("output_root", "results/ablations")))
+    output_root = prepare_output_dir(
+        str(plan.get("output_root", "results/ablations")),
+        resume=resume_existing or skip_completed,
+        overwrite=overwrite_output and not (resume_existing or skip_completed),
+        markers=ABLATION_OUTPUT_MARKERS,
+    )
+    runs = materialize_run_configs(plan)
     start_time = time.perf_counter()
     error_to_raise: Exception | None = None
     with log_file_context(output_root / "run.log", logger_names=("sic4gridcells",), mode="w"):
@@ -123,6 +159,9 @@ def run_ablations(
                 output_root=output_root,
                 dry_run=dry_run,
                 skip_evaluation=skip_evaluation,
+                resume_existing=resume_existing,
+                skip_completed=skip_completed,
+                overwrite_output=overwrite_output,
                 variant_count=len(runs),
                 continue_on_error=continue_on_error,
             )
@@ -145,7 +184,7 @@ def run_ablations(
                     continue
                 run_start = time.perf_counter()
                 try:
-                    load_config(run.config_path)
+                    cfg = load_config(run.config_path)
                     logger.info("variant config validated name=%s path=%s", run.name, run.config_path)
                     events.emit(
                         "variant_validated",
@@ -159,14 +198,49 @@ def run_ablations(
                             config_path=run.config_path,
                         )
                         continue
+                    if skip_completed and is_output_completed(
+                        cfg.output_dir,
+                        cfg.train.max_optimizer_steps,
+                    ):
+                        latest = discover_latest_checkpoint(cfg.output_dir)
+                        reason = (
+                            "already completed"
+                            if latest is None
+                            else f"already completed at step {latest.step}"
+                        )
+                        results[run.name] = AblationResult(
+                            status="skipped",
+                            config_path=run.config_path,
+                            reason=reason,
+                        )
+                        logger.info("variant skipped name=%s reason=%s", run.name, reason)
+                        events.emit(
+                            "variant_skipped",
+                            status="skipped",
+                            name=run.name,
+                            config_path=run.config_path,
+                            reason=reason,
+                        )
+                        continue
+                    resume_checkpoint = None
+                    if resume_existing:
+                        latest = discover_latest_checkpoint(cfg.output_dir)
+                        if latest is not None:
+                            resume_checkpoint = latest.path
                     logger.info("variant training started name=%s", run.name)
                     events.emit(
                         "variant_train_start",
                         status="started",
                         name=run.name,
                         config_path=run.config_path,
+                        resume_checkpoint=resume_checkpoint,
                     )
-                    run_result = train(run.config_path)
+                    train_kwargs = {}
+                    if resume_checkpoint is not None:
+                        train_kwargs["resume_checkpoint"] = resume_checkpoint
+                    if overwrite_output and resume_checkpoint is None:
+                        train_kwargs["overwrite_output"] = True
+                    run_result = train(run.config_path, **train_kwargs)
                     evaluation_result = None
                     if evaluation_enabled:
                         logger.info(
@@ -180,7 +254,11 @@ def run_ablations(
                             name=run.name,
                             checkpoint_path=run_result.checkpoint_path,
                         )
-                        evaluation_result = _evaluate_ablation_run(run_result, evaluation_cfg)
+                        evaluation_result = _evaluate_ablation_run(
+                            run_result,
+                            evaluation_cfg,
+                            overwrite_output=overwrite_output,
+                        )
                         logger.info(
                             "variant evaluation finished name=%s output_dir=%s",
                             run.name,
@@ -340,6 +418,8 @@ def materialize_run_configs(plan: dict[str, Any]) -> list[AblationRun]:
 def _evaluate_ablation_run(
     run_result: RunResult,
     evaluation_cfg: dict[str, Any],
+    *,
+    overwrite_output: bool = False,
 ) -> EvaluationResult:
     output_dir_name = str(evaluation_cfg.get("output_dir_name", "eval"))
     seed_value = evaluation_cfg.get("seed")
@@ -353,7 +433,9 @@ def _evaluate_ablation_run(
         n_trajectories=int(evaluation_cfg.get("trajectories", 32)),
         steps_per_trajectory=int(evaluation_cfg.get("steps", 256)),
         start_mode=str(evaluation_cfg.get("start_mode", "origin")),
+        trajectory_mode=str(evaluation_cfg.get("trajectory_mode", "reflect")),
         seed=seed,
+        overwrite_output=overwrite_output,
     )
 
 
@@ -409,8 +491,13 @@ def _write_ablation_summary(
                 "error_message": result.error_message,
                 "arena_size": None,
                 "mean_grid_score_60": None,
+                "mean_grid_score_90": None,
                 "mean_scale_meters": None,
                 "detected_modules": None,
+                "coverage_fraction": None,
+                "units_without_coverage": None,
+                "zero_response_units": None,
+                "invalid_response_units": None,
                 "active_units": None,
             }
             if isinstance(arena_summary, dict):
@@ -418,8 +505,13 @@ def _write_ablation_summary(
                     {
                         "arena_size": arena_summary.get("arena_size"),
                         "mean_grid_score_60": arena_summary.get("mean_grid_score_60"),
+                        "mean_grid_score_90": arena_summary.get("mean_grid_score_90"),
                         "mean_scale_meters": arena_summary.get("mean_scale_meters"),
                         "detected_modules": arena_summary.get("detected_modules"),
+                        "coverage_fraction": arena_summary.get("coverage_fraction"),
+                        "units_without_coverage": arena_summary.get("units_without_coverage"),
+                        "zero_response_units": arena_summary.get("zero_response_units"),
+                        "invalid_response_units": arena_summary.get("invalid_response_units"),
                         "active_units": arena_summary.get("active_units"),
                     }
                 )
@@ -438,8 +530,13 @@ def _write_ablation_summary(
             "error_message",
             "arena_size",
             "mean_grid_score_60",
+            "mean_grid_score_90",
             "mean_scale_meters",
             "detected_modules",
+            "coverage_fraction",
+            "units_without_coverage",
+            "zero_response_units",
+            "invalid_response_units",
             "active_units",
         ]
         writer = csv.DictWriter(handle, fieldnames=fieldnames)

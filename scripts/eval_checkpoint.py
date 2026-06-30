@@ -34,6 +34,11 @@ def parse_args() -> argparse.Namespace:
         help="Evaluation trajectory sampler.",
     )
     parser.add_argument(
+        "--overwrite-output",
+        action="store_true",
+        help="Allow evaluation to reuse an existing output directory.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=VALID_LOG_LEVELS,
@@ -57,6 +62,7 @@ def main() -> None:
             start_mode=args.start_mode,
             trajectory_mode=args.trajectory_mode,
             seed=args.seed,
+            overwrite_output=args.overwrite_output,
         )
     print(f"finished output_dir={result.output_dir}")
 

@@ -19,6 +19,11 @@ def parse_args() -> argparse.Namespace:
         help="Path to a checkpoint to resume from. Only train.max_optimizer_steps may differ.",
     )
     parser.add_argument(
+        "--overwrite-output",
+        action="store_true",
+        help="Allow a fresh run to reuse an existing output directory.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=VALID_LOG_LEVELS,
@@ -29,8 +34,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.resume is not None and args.overwrite_output:
+        raise SystemExit("--resume and --overwrite-output cannot be used together")
     with cli_logging_context(args.log_level):
-        result = train(args.config, resume_checkpoint=args.resume)
+        result = train(
+            args.config,
+            resume_checkpoint=args.resume,
+            overwrite_output=args.overwrite_output,
+        )
     print(f"finished step={result.final_step} output_dir={result.output_dir}")
     print(f"checkpoint={result.checkpoint_path}")
 

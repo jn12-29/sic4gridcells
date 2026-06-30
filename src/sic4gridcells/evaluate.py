@@ -27,6 +27,7 @@ from sic4gridcells.plotting import (
     save_sac_pdf,
     save_summary_figure,
 )
+from sic4gridcells.runtime import EVAL_OUTPUT_MARKERS, prepare_output_dir
 
 ZERO_RESPONSE_EPS = 1e-12
 EVAL_STEP_SCALE_FRACTION = 0.15
@@ -59,10 +60,14 @@ def evaluate_checkpoint(
     start_mode: str = "origin",
     trajectory_mode: str = "reflect",
     seed: int | None = None,
+    overwrite_output: bool = False,
 ) -> EvaluationResult:
     checkpoint_path = Path(checkpoint_path)
-    out_dir = Path(output_dir) if output_dir is not None else checkpoint_path.with_suffix("")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = prepare_output_dir(
+        Path(output_dir) if output_dir is not None else checkpoint_path.with_suffix(""),
+        overwrite=overwrite_output,
+        markers=EVAL_OUTPUT_MARKERS,
+    )
     start_time = time.perf_counter()
     with log_file_context(out_dir / "run.log", logger_names=("sic4gridcells",), mode="w"):
         with JsonlEventLogger(out_dir / "eval_events.jsonl", mode="w") as events:
@@ -86,6 +91,7 @@ def evaluate_checkpoint(
                     start_mode=start_mode,
                     trajectory_mode=trajectory_mode,
                     requested_seed=seed,
+                    overwrite_output=overwrite_output,
                 )
                 checkpoint = torch.load(checkpoint_path, map_location="cpu")
                 cfg = _config_from_checkpoint(checkpoint["config"])

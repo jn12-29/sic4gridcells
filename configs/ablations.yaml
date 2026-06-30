@@ -11,6 +11,7 @@ evaluation:
   trajectories: 32
   steps: 256
   start_mode: origin
+  trajectory_mode: reflect
   seed: 0
 
 base:

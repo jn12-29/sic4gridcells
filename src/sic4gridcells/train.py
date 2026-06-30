@@ -22,6 +22,14 @@ from sic4gridcells.logging_utils import (
 )
 from sic4gridcells.losses import sic_losses
 from sic4gridcells.model import VelocityConditionedRNN
+from sic4gridcells.runtime import (
+    CheckpointManager,
+    TRAIN_OUTPUT_MARKERS,
+    StepTimer,
+    collect_runtime_snapshot,
+    prepare_output_dir,
+    reset_cuda_peak_memory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +41,17 @@ class RunResult:
     checkpoint_path: Path
 
 
-def train(config_path: str | Path, resume_checkpoint: str | Path | None = None) -> RunResult:
+def train(
+    config_path: str | Path,
+    resume_checkpoint: str | Path | None = None,
+    *,
+    overwrite_output: bool = False,
+) -> RunResult:
     cfg = load_config(config_path)
     return train_with_config(
         cfg,
         resume_checkpoint=resume_checkpoint,
+        overwrite_output=overwrite_output,
         config_path=Path(config_path),
     )
 
@@ -45,13 +59,19 @@ def train(config_path: str | Path, resume_checkpoint: str | Path | None = None) 
 def train_with_config(
     cfg: Config,
     resume_checkpoint: str | Path | None = None,
+    overwrite_output: bool = False,
     config_path: str | Path | None = None,
 ) -> RunResult:
-    output_dir = Path(cfg.output_dir)
     resume_path = Path(resume_checkpoint) if resume_checkpoint is not None else None
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = prepare_output_dir(
+        cfg.output_dir,
+        resume=resume_path is not None,
+        overwrite=overwrite_output,
+        markers=TRAIN_OUTPUT_MARKERS,
+    )
     checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_manager = CheckpointManager(checkpoint_dir)
     metrics_path = output_dir / "metrics.jsonl"
     events_path = output_dir / "train_events.jsonl"
     log_path = output_dir / "run.log"
@@ -101,6 +121,14 @@ def train_with_config(
                     log_every=cfg.train.log_every,
                     checkpoint_every=cfg.train.checkpoint_every,
                     resume_checkpoint=resume_path,
+                    overwrite_output=overwrite_output,
+                )
+                runtime_snapshot = collect_runtime_snapshot(device, output_dir)
+                events.emit(
+                    "runtime_preflight",
+                    status="ok",
+                    output_dir=output_dir,
+                    **runtime_snapshot.as_event_fields(),
                 )
                 if resume_path is not None:
                     logger.info(
@@ -183,6 +211,8 @@ def train_with_config(
                     with metrics_path.open(metrics_mode, encoding="utf-8") as metrics_file:
                         for step in range(start_step + 1, cfg.train.max_optimizer_steps + 1):
                             current_step = step
+                            step_timer = StepTimer()
+                            reset_cuda_peak_memory(device)
                             optimizer.zero_grad(set_to_none=True)
                             micro_metrics: list[dict[str, float]] = []
                             for _ in range(cfg.train.accumulate_grad_batches):
@@ -194,6 +224,7 @@ def train_with_config(
                                 )
                                 rollout = model(batch.velocities, initial_positions=initial_positions)
                                 losses = sic_losses(batch, rollout, cfg)
+                                _assert_finite_loss_tensors(losses, step)
                                 (
                                     losses["loss/total"] / cfg.train.accumulate_grad_batches
                                 ).backward()
@@ -206,10 +237,19 @@ def train_with_config(
                             grad_norm = torch.nn.utils.clip_grad_norm_(
                                 model.parameters(),
                                 cfg.train.grad_clip_norm,
+                                error_if_nonfinite=True,
                             )
                             optimizer.step()
                             log_row = _aggregate_metric_dicts(micro_metrics)
                             log_row["step"] = float(step)
+                            step_seconds = step_timer.elapsed()
+                            log_row["perf/step_seconds"] = step_seconds
+                            points_per_step = (
+                                cfg.data.batch_size
+                                * cfg.data.trajectory_length
+                                * cfg.train.accumulate_grad_batches
+                            )
+                            log_row["perf/points_per_second"] = points_per_step / step_seconds
                             log_row["grad_norm"] = float(grad_norm.detach().cpu())
                             monitor_value = log_row[cfg.train.scheduler_monitor]
                             scheduler.step(monitor_value)
@@ -221,6 +261,8 @@ def train_with_config(
                                 or step % cfg.train.log_every == 0
                             )
                             if should_log:
+                                runtime_snapshot = collect_runtime_snapshot(device, output_dir)
+                                log_row.update(runtime_snapshot.as_metric_fields())
                                 _write_metrics(metrics_file, writer, step, log_row)
                                 non_finite_keys = _non_finite_metric_keys(log_row)
                                 if non_finite_keys:
@@ -254,15 +296,16 @@ def train_with_config(
                                 step % cfg.train.checkpoint_every == 0
                                 or step == cfg.train.max_optimizer_steps
                             ):
-                                latest_checkpoint = checkpoint_dir / f"step_{step}.pt"
-                                _save_checkpoint(
-                                    latest_checkpoint,
+                                latest_checkpoint = checkpoint_manager.save(
+                                    _checkpoint_payload(
+                                        step,
+                                        cfg,
+                                        model,
+                                        optimizer,
+                                        scheduler,
+                                        generator,
+                                    ),
                                     step,
-                                    cfg,
-                                    model,
-                                    optimizer,
-                                    scheduler,
-                                    generator,
                                 )
                                 logger.info(
                                     "checkpoint saved step=%s path=%s",
@@ -274,6 +317,8 @@ def train_with_config(
                                     status="written",
                                     step=step,
                                     checkpoint_path=latest_checkpoint,
+                                    latest_checkpoint_path=checkpoint_manager.latest_path,
+                                    manifest_path=checkpoint_manager.manifest_path,
                                 )
                 except Exception as exc:
                     failure_recorded = True
@@ -402,26 +447,32 @@ def _non_finite_metric_keys(metrics: dict[str, float]) -> list[str]:
     ]
 
 
-def _save_checkpoint(
-    path: Path,
+def _checkpoint_payload(
     step: int,
     cfg: Config,
     model: VelocityConditionedRNN,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
     generator: torch.Generator,
-) -> None:
-    torch.save(
-        {
-            "step": step,
-            "config": asdict(cfg),
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "generator_state": generator.get_state(),
-        },
-        path,
-    )
+) -> dict[str, object]:
+    return {
+        "step": step,
+        "config": asdict(cfg),
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "generator_state": generator.get_state(),
+    }
+
+
+def _assert_finite_loss_tensors(losses: dict[str, torch.Tensor], step: int) -> None:
+    non_finite_keys = []
+    for key, value in losses.items():
+        if torch.is_floating_point(value) and not bool(torch.isfinite(value).all()):
+            non_finite_keys.append(key)
+    if non_finite_keys:
+        joined = ", ".join(non_finite_keys)
+        raise FloatingPointError(f"Non-finite loss values at step {step}: {joined}")
 
 
 def _validate_resume_config(

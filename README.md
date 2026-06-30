@@ -51,6 +51,8 @@ The smoke run writes:
 - `results/smoke/tensorboard/`
 - `results/smoke/checkpoints/step_5.pt`
 - `results/smoke/checkpoints/step_10.pt`
+- `results/smoke/checkpoints/latest.pt`
+- `results/smoke/checkpoints/checkpoint_manifest.json`
 
 `results/` is ignored by git.
 
@@ -60,6 +62,12 @@ checkpoint config, change only `train.max_optimizer_steps`:
 ```bash
 uv run python scripts/train_sic.py --config configs/medium.yaml --resume results/medium/checkpoints/step_500.pt
 ```
+
+Fresh training runs refuse to reuse an output directory that already contains
+files. Use `--resume` for interrupted runs, or pass `--overwrite-output` only
+when intentionally rerunning into the same directory. Training metrics include
+step timing, throughput, disk free space, and CUDA memory fields when CUDA is
+active.
 
 Evaluate the smoke checkpoint:
 
@@ -74,6 +82,8 @@ Evaluation defaults to `--start-mode origin`, which keeps reset model state alig
 Evaluation also defaults to `--trajectory-mode reflect` for backward-compatible bounded walks. Use `--trajectory-mode smooth_avoid_walls` for smoother wall-avoiding diagnostic trajectories.
 
 The evaluation CLI also accepts `--log-level`; runtime logs go to `run.log` and structured events go to `eval_events.jsonl` beside the evaluation summary.
+Evaluation also refuses to reuse an existing output directory unless
+`--overwrite-output` is passed.
 
 ## Configs
 
@@ -82,6 +92,7 @@ The evaluation CLI also accepts `--log-level`; runtime logs go to `run.log` and 
 - `configs/sic_paper.yaml`: paper-scale training hyperparameters from the reproduction plan.
 - `configs/ablations.yaml`: ablation orchestration plan for `scripts/run_ablations.py`.
 - `scripts/run_ablations.py` accepts `--log-level`; the ablation root writes `run.log` and `ablation_events.jsonl`.
+- `scripts/run_ablations.py` accepts `--resume-existing` to resume variants from their latest checkpoints, `--skip-completed` to skip variants that already reached `train.max_optimizer_steps`, and `--overwrite-output` for intentional fresh reruns into existing directories.
 
 Important training semantics:
 
@@ -112,6 +123,7 @@ Key modules:
 - `sic4gridcells.evaluate`: checkpoint reload, bounded random-walk evaluation, artifact writing.
 - `sic4gridcells.analysis`: ratemap, SAC, grid score, and grid-scale utilities.
 - `sic4gridcells.plotting`: PDF and PNG evaluation figures.
+- `sic4gridcells.runtime`: output safety, atomic checkpoint writes, latest-checkpoint discovery, and runtime diagnostics.
 - `docs/runbook.md`: medium, paper-scale, and ablation command sequence.
 
 ## Current Limits

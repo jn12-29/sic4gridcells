@@ -1,3 +1,4 @@
+import csv
 import json
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import scripts.run_ablations as run_ablations_script
 from sic4gridcells.evaluate import EvaluationResult
 from sic4gridcells.config import load_config
 from sic4gridcells.train import RunResult
+from sic4gridcells.runtime import OutputDirectoryConflictError
 
 
 def test_repo_ablation_config_materializes_valid_training_configs(tmp_path: Path) -> None:
@@ -105,6 +107,98 @@ def test_run_ablations_invokes_train_for_enabled_variants(
     assert (tmp_path / "runs" / "ablation_events.jsonl").exists()
     events = _load_jsonl(tmp_path / "runs" / "ablation_events.jsonl")
     assert {"ablation_start", "variant_validated", "variant_finished", "ablation_summary_written", "ablation_finished"} <= {row["event"] for row in events}
+
+
+def test_run_ablations_skip_completed_variants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ablation_path = tmp_path / "ablations.yaml"
+    ablation_path.write_text(
+        yaml.safe_dump(
+            {
+                "output_root": str(tmp_path / "runs"),
+                "config_dir": str(tmp_path / "configs"),
+                "base": _tiny_base_config(tmp_path / "base"),
+                "variants": [{"name": "baseline", "overrides": {}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "configs" / "baseline.yaml"
+    output_dir = tmp_path / "runs" / "baseline"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = output_dir / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True)
+    (checkpoint_dir / "step_1.pt").write_bytes(b"fake")
+
+    def fail_train(*args, **kwargs) -> RunResult:
+        raise AssertionError("completed variant should be skipped")
+
+    monkeypatch.setattr(run_ablations_script, "train", fail_train)
+
+    results = run_ablations_script.run_ablations(
+        ablation_path,
+        resume_existing=True,
+        skip_completed=True,
+        overwrite_output=True,
+    )
+
+    assert results["baseline"].status == "skipped"
+
+
+def test_run_ablations_resumes_from_latest_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ablation_path = tmp_path / "ablations.yaml"
+    ablation_path.write_text(
+        yaml.safe_dump(
+            {
+                "output_root": str(tmp_path / "runs"),
+                "config_dir": str(tmp_path / "configs"),
+                "base": _tiny_base_config(tmp_path / "base"),
+                "variants": [{"name": "baseline", "overrides": {}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "runs" / "baseline"
+    checkpoint_dir = output_dir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "step_1.pt").write_bytes(b"fake")
+
+    calls: list[tuple[str, str | None, bool]] = []
+
+    def fake_train(
+        config_path: str | Path,
+        resume_checkpoint: str | Path | None = None,
+        *,
+        overwrite_output: bool = False,
+    ) -> RunResult:
+        calls.append(
+            (
+                Path(config_path).name,
+                None if resume_checkpoint is None else Path(resume_checkpoint).name,
+                overwrite_output,
+            )
+        )
+        cfg = load_config(config_path)
+        return RunResult(
+            output_dir=Path(cfg.output_dir),
+            final_step=cfg.train.max_optimizer_steps,
+            checkpoint_path=Path(cfg.output_dir) / "checkpoints" / "step_1.pt",
+        )
+
+    monkeypatch.setattr(run_ablations_script, "train", fake_train)
+
+    results = run_ablations_script.run_ablations(
+        ablation_path,
+        resume_existing=True,
+    )
+
+    assert results["baseline"].status == "finished"
+    assert calls == [("baseline.yaml", "step_1.pt", False)]
 
 
 def test_run_ablations_dry_run_validates_without_training(
@@ -233,6 +327,7 @@ def test_run_ablations_can_evaluate_and_summarize_finished_runs(
                     "trajectories": 1,
                     "steps": 2,
                     "seed": 7,
+                    "trajectory_mode": "smooth_avoid_walls",
                 },
                 "base": _tiny_base_config(tmp_path / "base"),
                 "variants": [{"name": "baseline", "overrides": {}}],
@@ -250,7 +345,10 @@ def test_run_ablations_can_evaluate_and_summarize_finished_runs(
             checkpoint_path=output_dir / "checkpoints" / "step_1.pt",
         )
 
+    evaluate_kwargs = {}
+
     def fake_evaluate_checkpoint(*args, **kwargs) -> EvaluationResult:
+        evaluate_kwargs.update(kwargs)
         output_dir = Path(args[1])
         output_dir.mkdir(parents=True)
         (output_dir / "summary.json").write_text(
@@ -260,8 +358,13 @@ def test_run_ablations_can_evaluate_and_summarize_finished_runs(
                         {
                             "arena_size": 1.0,
                             "mean_grid_score_60": 0.25,
+                            "mean_grid_score_90": 0.5,
                             "mean_scale_meters": 0.5,
                             "detected_modules": 2,
+                            "coverage_fraction": 0.75,
+                            "units_without_coverage": 0,
+                            "zero_response_units": 1,
+                            "invalid_response_units": 2,
                             "active_units": 3,
                         }
                     ]
@@ -280,8 +383,17 @@ def test_run_ablations_can_evaluate_and_summarize_finished_runs(
     summary = yaml.safe_load((tmp_path / "runs" / "summary.json").read_text(encoding="utf-8"))
     assert summary[0]["evaluation_output_dir"] == str(tmp_path / "runs" / "baseline" / "eval")
     assert summary[0]["arena_summaries"][0]["detected_modules"] == 2
+    assert evaluate_kwargs["trajectory_mode"] == "smooth_avoid_walls"
+    with (tmp_path / "runs" / "summary.csv").open(newline="", encoding="utf-8") as handle:
+        csv_rows = list(csv.DictReader(handle))
+    assert csv_rows[0]["mean_grid_score_90"] == "0.5"
+    assert csv_rows[0]["coverage_fraction"] == "0.75"
+    assert csv_rows[0]["zero_response_units"] == "1"
+    assert csv_rows[0]["invalid_response_units"] == "2"
+    assert csv_rows[0]["active_units"] == "3"
     events = _load_jsonl(tmp_path / "runs" / "ablation_events.jsonl")
     assert {"variant_train_start", "variant_eval_start", "variant_eval_finished", "variant_finished"} <= {row["event"] for row in events}
+    assert any(row.get("resume_checkpoint") is None for row in events if row["event"] == "variant_train_start")
 
 
 def test_run_ablations_records_failed_variants_with_errors(
@@ -319,6 +431,29 @@ def test_run_ablations_records_failed_variants_with_errors(
     assert any(row["event"] == "variant_failed" for row in events)
     assert events[-1]["event"] == "ablation_failed"
     assert all(row["event"] != "ablation_finished" for row in events)
+
+
+def test_run_ablations_fresh_run_refuses_existing_output_root_without_overwrite(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "runs"
+    output_root.mkdir()
+    (output_root / "summary.json").write_text("[]", encoding="utf-8")
+    ablation_path = tmp_path / "ablations.yaml"
+    ablation_path.write_text(
+        yaml.safe_dump(
+            {
+                "output_root": str(output_root),
+                "config_dir": str(tmp_path / "configs"),
+                "base": _tiny_base_config(tmp_path / "base"),
+                "variants": [{"name": "baseline", "overrides": {}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OutputDirectoryConflictError, match="Refusing to overwrite"):
+        run_ablations_script.run_ablations(ablation_path)
 
 
 def test_failed_variant_duration_uses_variant_start(

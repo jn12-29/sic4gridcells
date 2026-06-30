@@ -25,6 +25,7 @@ from sic4gridcells.evaluate import (
     _unit_response_counts,
 )
 from sic4gridcells.model import RNNRollout, VelocityConditionedRNN
+from sic4gridcells.runtime import OutputDirectoryConflictError
 
 
 def test_evaluate_checkpoint_writes_artifacts(tmp_path: Path) -> None:
@@ -140,6 +141,27 @@ def test_evaluate_checkpoint_writes_artifacts(tmp_path: Path) -> None:
     events = _load_jsonl(result.output_dir / "eval_events.jsonl")
     assert {"eval_start", "eval_config_loaded", "eval_arena_start", "eval_arena_finished", "eval_summary_written", "eval_finished"} <= {row["event"] for row in events}
     assert all("timestamp" in row for row in events)
+
+
+def test_evaluate_checkpoint_refuses_existing_output_without_overwrite(tmp_path: Path) -> None:
+    checkpoint_path = _write_checkpoint(
+        tmp_path,
+        ModelConfig(n_units=4, mlp_layers=1, mlp_hidden_width=8),
+    )
+    output_dir = tmp_path / "eval-collision"
+    output_dir.mkdir()
+    (output_dir / "summary.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(OutputDirectoryConflictError, match="Refusing to overwrite"):
+        evaluate_checkpoint(
+            checkpoint_path,
+            output_dir,
+            device="cpu",
+            arena_sizes=(1.0,),
+            nbins=4,
+            n_trajectories=1,
+            steps_per_trajectory=4,
+        )
 
 
 def test_accumulate_ratemaps_returns_occupancy_and_preserves_nan_for_unvisited_bins() -> None:

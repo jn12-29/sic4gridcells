@@ -24,12 +24,12 @@ Repo-specific instructions for agents working in this repository.
 | Run config/data/model/loss tests | `uv run python -m pytest tests/test_config.py tests/test_data.py tests/test_model.py tests/test_losses.py` |
 | Run train smoke test | `uv run python -m pytest tests/test_train_step.py` |
 | Show training CLI help | `uv run python scripts/train_sic.py --help` |
-| Run smoke training | `uv run python scripts/train_sic.py --config configs/smoke.yaml` |
+| Run smoke training | `uv run python scripts/train_sic.py --config configs/smoke.yaml --overwrite-output` |
 | Run evaluation tests | `uv run python -m pytest tests/test_analysis.py tests/test_evaluate.py` |
 | Show evaluation CLI help | `uv run python scripts/eval_checkpoint.py --help` |
-| Evaluate smoke checkpoint | `uv run python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16` |
+| Evaluate smoke checkpoint | `uv run python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16 --overwrite-output` |
 | Show ablation CLI help | `uv run python scripts/run_ablations.py --help` |
-| Dry-run ablations | `uv run python scripts/run_ablations.py --config configs/ablations.yaml --dry-run` |
+| Dry-run ablations | `uv run python scripts/run_ablations.py --config configs/ablations.yaml --dry-run --overwrite-output` |
 
 ## Current Contracts
 
@@ -65,7 +65,7 @@ After changing code, configs, scripts, or docs that mention commands, run the na
 
 ```bash
 uv run python -m pytest
-uv run python scripts/train_sic.py --config configs/smoke.yaml
+uv run python scripts/train_sic.py --config configs/smoke.yaml --overwrite-output
 ```
 
 Before finishing docs changes, verify referenced paths exist and grep the changed docs for stale placeholders or claims about unimplemented evaluation features.

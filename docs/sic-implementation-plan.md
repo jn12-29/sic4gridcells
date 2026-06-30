@@ -167,14 +167,16 @@ docs/runbook.md
 
 `train.py` 提供：
 
-- `train(config_path: str) -> RunResult`。
+- `train(config_path: str | Path, resume_checkpoint: str | Path | None = None, *, overwrite_output: bool = False) -> RunResult`。
 - 输出目录包含：
   - `run.log`：训练生命周期和进度日志。
   - `train_events.jsonl`：严格 JSONL 的结构化事件流。
   - `config.yaml`：effective config。
-  - `metrics.jsonl`：每步或每 `log_every` 的 loss、loss components、lr、grad norm、zero-norm fraction、pair counts。
+  - `metrics.jsonl`：每步或每 `log_every` 的 loss、loss components、lr、grad norm、zero-norm fraction、pair counts、step timing、throughput、disk free space 和 CUDA memory diagnostics。
   - `tensorboard/`。
   - `checkpoints/step_<step>.pt`。
+  - `checkpoints/latest.pt`。
+  - `checkpoints/checkpoint_manifest.json`。
 
 训练流程：
 
@@ -193,6 +195,15 @@ docs/runbook.md
 - 运行时的 human-readable 日志写入各自的 `run.log`。
 - 结构化事件写入各自的 `*_events.jsonl`，行级记录只包含可 JSON 序列化字段，非有限数值会写成 `null`。
 - resume 时，训练的事件日志会按 checkpoint step 裁剪，和 `metrics.jsonl` 的裁剪逻辑保持一致。
+
+### Runtime safety and recovery
+
+- Fresh training、evaluation 和 ablation runs 默认拒绝复用非空 output directory；显式 resume 或 `--overwrite-output` 才能复用。
+- Training resume 仍只允许 checkpoint config 与当前 config 在 `train.max_optimizer_steps` 上不同。
+- Checkpoint 写入使用 atomic replace；每次 checkpoint 保存同时写 `checkpoints/step_<step>.pt`、`checkpoints/latest.pt` 和 `checkpoints/checkpoint_manifest.json`。
+- Checkpoint 文件必须继续能用默认 `torch.load(path, map_location="cpu")` 加载。
+- Training 在 backward 前检查 floating loss tensors 是否 finite，并在 gradient clipping 时启用 non-finite gradient error。
+- `scripts/run_ablations.py --resume-existing` 从每个 variant 的 latest checkpoint 继续；`--skip-completed` 跳过 latest checkpoint 已达到 `train.max_optimizer_steps` 的 variant。
 
 ## 分阶段执行计划
 
@@ -298,7 +309,7 @@ uv run python scripts/eval_checkpoint.py --checkpoint <medium-checkpoint> --outp
 
 - 中等规模 run 不 OOM。
 - 至少部分 units 出现空间调谐或周期趋势。
-- metrics 中记录 pair counts 和 zero-norm fraction；throughput、GPU memory 和 coverage/zero/invalid/active response counts 仍属于后续监控增强。
+- metrics 中记录 pair counts、zero-norm fraction、throughput、disk free space 和 CUDA memory diagnostics；coverage/zero/invalid/active response counts 由 evaluation summary 记录。
 
 ### 阶段 5：paper config 和消融
 

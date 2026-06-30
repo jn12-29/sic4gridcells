@@ -9,6 +9,7 @@ import yaml
 
 import scripts.train_sic as train_cli
 from sic4gridcells.train import train, _write_metrics
+from sic4gridcells.runtime import OutputDirectoryConflictError, discover_latest_checkpoint
 
 
 def test_train_smoke_writes_outputs(tmp_path: Path) -> None:
@@ -70,11 +71,20 @@ def test_train_smoke_writes_outputs(tmp_path: Path) -> None:
     assert (output_dir / "run.log").exists()
     assert (output_dir / "train_events.jsonl").exists()
     assert (output_dir / "checkpoints" / "step_2.pt").exists()
+    assert (output_dir / "checkpoints" / "latest.pt").exists()
+    assert (output_dir / "checkpoints" / "checkpoint_manifest.json").exists()
     assert any((output_dir / "tensorboard").glob("events.out.tfevents.*"))
     checkpoint = torch.load(output_dir / "checkpoints" / "step_2.pt", map_location="cpu")
+    latest_checkpoint = torch.load(output_dir / "checkpoints" / "latest.pt", map_location="cpu")
     assert checkpoint["step"] == 2
+    assert latest_checkpoint["step"] == 2
     assert checkpoint["config"]["train"]["max_optimizer_steps"] == 2
     assert "model_state_dict" in checkpoint
+    manifest = json.loads(
+        (output_dir / "checkpoints" / "checkpoint_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["latest_step"] == 2
+    assert manifest["latest_alias"] == str(output_dir / "checkpoints" / "latest.pt")
     rows = [
         json.loads(line)
         for line in (output_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
@@ -89,6 +99,9 @@ def test_train_smoke_writes_outputs(tmp_path: Path) -> None:
         "loss/conformal_isometry",
         "lr",
         "grad_norm",
+        "perf/step_seconds",
+        "perf/points_per_second",
+        "disk/output_free_gb",
         "stats/zero_norm_fraction",
         "stats/separation_pairs",
         "stats/invariance_pairs",
@@ -111,7 +124,7 @@ def test_train_logs_on_requested_cadence(tmp_path: Path) -> None:
     config["train"]["checkpoint_every"] = 5
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
-    train(config_path)
+    train(config_path, overwrite_output=True)
 
     metric_rows = _load_jsonl(output_dir / "metrics.jsonl")
     event_rows = _load_jsonl(output_dir / "train_events.jsonl")
@@ -135,11 +148,55 @@ def test_fresh_early_failure_replaces_previous_event_log(
     monkeypatch.setattr("sic4gridcells.train.resolve_device", fail_resolve_device)
 
     with pytest.raises(RuntimeError, match="cannot resolve"):
-        train(config_path)
+        train(config_path, overwrite_output=True)
 
     events = _load_jsonl(output_dir / "train_events.jsonl")
     assert [row["event"] for row in events] == ["train_failed"]
     assert events[0]["error_type"] == "RuntimeError"
+
+
+def test_fresh_train_refuses_existing_output_dir_without_overwrite(tmp_path: Path) -> None:
+    config_path = tmp_path / "collision.yaml"
+    output_dir = tmp_path / "collision-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=1)
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    train(config_path)
+
+    with pytest.raises(OutputDirectoryConflictError, match="Refusing to overwrite"):
+        train(config_path)
+
+
+def test_train_aborts_on_non_finite_loss_before_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "nonfinite.yaml"
+    output_dir = tmp_path / "nonfinite-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=1)
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    def nonfinite_losses(batch, rollout, cfg):
+        loss = rollout.hidden_states.sum() * float("nan")
+        return {
+            "loss/total": loss,
+            "loss/separation": loss,
+            "loss/invariance": loss,
+            "loss/capacity": loss,
+            "loss/conformal_isometry": loss,
+            "stats/separation_pairs": torch.tensor(0),
+            "stats/invariance_pairs": torch.tensor(0),
+            "stats/conformal_isometry_steps": torch.tensor(0),
+        }
+
+    monkeypatch.setattr("sic4gridcells.train.sic_losses", nonfinite_losses)
+
+    with pytest.raises(FloatingPointError, match="Non-finite loss values"):
+        train(config_path)
+
+    assert not (output_dir / "checkpoints" / "step_1.pt").exists()
+    events = _load_jsonl(output_dir / "train_events.jsonl")
+    assert events[-1]["event"] == "train_failed"
+    assert events[-1]["error_type"] == "FloatingPointError"
 
 
 def test_train_with_initial_position_encoder(tmp_path: Path) -> None:
@@ -409,7 +466,14 @@ def test_train_cli_keeps_stdout_completion_lines(
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     monkeypatch.setattr(
         "sys.argv",
-        ["train_sic.py", "--config", str(config_path), "--log-level", "INFO"],
+        [
+            "train_sic.py",
+            "--config",
+            str(config_path),
+            "--log-level",
+            "INFO",
+            "--overwrite-output",
+        ],
     )
 
     train_cli.main()
@@ -417,6 +481,50 @@ def test_train_cli_keeps_stdout_completion_lines(
     output = capsys.readouterr().out.strip().splitlines()
     assert output[0].startswith("finished step=1 output_dir=")
     assert output[1].startswith("checkpoint=")
+
+
+def test_train_cli_rejects_resume_with_overwrite(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "train_sic.py",
+            "--config",
+            "configs/smoke.yaml",
+            "--resume",
+            "results/smoke/checkpoints/latest.pt",
+            "--overwrite-output",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        train_cli.main()
+    assert "resume" in str(exc_info.value)
+
+
+def test_discover_latest_checkpoint_prefers_newer_step_file_over_stale_manifest(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir = tmp_path / "run" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "step_1.pt").write_bytes(b"old")
+    (checkpoint_dir / "step_3.pt").write_bytes(b"new")
+    (checkpoint_dir / "checkpoint_manifest.json").write_text(
+        json.dumps(
+            {
+                "latest_step": 1,
+                "latest_checkpoint": "step_1.pt",
+                "latest_alias": "latest.pt",
+                "checkpoints": [{"step": 1, "path": "step_1.pt"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    latest = discover_latest_checkpoint(tmp_path / "run")
+
+    assert latest is not None
+    assert latest.step == 3
+    assert latest.path == checkpoint_dir / "step_3.pt"
 
 
 def test_train_cli_log_level_debug_reaches_stderr(
