@@ -6,9 +6,8 @@
 
 环境约定：
 
-- 使用仓库内 `.venv/bin/python` 运行 Python 命令。
-- 项目依赖以 `pyproject.toml` 为权威，安装或刷新依赖时使用 `uv pip install --python .venv/bin/python -e .`。
-- 注意：不要裸跑 `uv pip install ...`；本机上它会使用当前 conda 环境。后续安装必须使用 `uv pip install --python .venv/bin/python ...`。
+- 使用 `uv run python` 运行 Python 命令；uv 会从仓库根目录发现本地 `.venv`。
+- 项目依赖以 `pyproject.toml` 为权威，安装或刷新依赖时在仓库根目录运行 `uv pip install -e .`。
 
 ## 非目标
 
@@ -207,8 +206,8 @@ docs/runbook.md
 验证：
 
 ```bash
-.venv/bin/python -m pytest
-.venv/bin/python scripts/train_sic.py --help
+uv run python -m pytest
+uv run python scripts/train_sic.py --help
 ```
 
 ### 阶段 1：核心单元测试
@@ -221,7 +220,7 @@ docs/runbook.md
 验证：
 
 ```bash
-.venv/bin/python -m pytest tests/test_config.py tests/test_data.py tests/test_model.py tests/test_losses.py
+uv run python -m pytest tests/test_config.py tests/test_data.py tests/test_model.py tests/test_losses.py
 ```
 
 验收：
@@ -240,8 +239,8 @@ docs/runbook.md
 验证：
 
 ```bash
-.venv/bin/python -m pytest tests/test_train_step.py
-.venv/bin/python scripts/train_sic.py --config configs/smoke.yaml
+uv run python -m pytest tests/test_train_step.py
+uv run python scripts/train_sic.py --config configs/smoke.yaml
 ```
 
 验收：
@@ -271,8 +270,8 @@ docs/runbook.md
 验证：
 
 ```bash
-.venv/bin/python -m pytest tests/test_analysis.py tests/test_evaluate.py
-.venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16
+uv run python -m pytest tests/test_analysis.py tests/test_evaluate.py
+uv run python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16
 ```
 
 验收：
@@ -291,8 +290,8 @@ docs/runbook.md
 验证：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/train_sic.py --config configs/medium.yaml
-.venv/bin/python scripts/eval_checkpoint.py --checkpoint <medium-checkpoint> --output-dir results/medium/eval
+CUDA_VISIBLE_DEVICES=0 uv run python scripts/train_sic.py --config configs/medium.yaml
+uv run python scripts/eval_checkpoint.py --checkpoint <medium-checkpoint> --output-dir results/medium/eval
 ```
 
 验收：
@@ -313,8 +312,8 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/train_sic.py --config configs/me
 验证：
 
 ```bash
-CUDA_VISIBLE_DEVICES=<id> .venv/bin/python scripts/train_sic.py --config configs/sic_paper.yaml
-.venv/bin/python scripts/run_ablations.py --config configs/ablations.yaml
+CUDA_VISIBLE_DEVICES=<id> uv run python scripts/train_sic.py --config configs/sic_paper.yaml
+uv run python scripts/run_ablations.py --config configs/ablations.yaml
 ```
 
 验收：
@@ -329,7 +328,7 @@ CUDA_VISIBLE_DEVICES=<id> .venv/bin/python scripts/train_sic.py --config configs
 每个阶段合并前执行：
 
 ```bash
-.venv/bin/python -m pytest
+uv run python -m pytest
 ```
 
 阶段 1 和阶段 2 修改核心接口后，使用一个只读 reviewer 检查：

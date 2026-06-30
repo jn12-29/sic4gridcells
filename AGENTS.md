@@ -11,26 +11,25 @@ Repo-specific instructions for agents working in this repository.
 
 ## Environment
 
-- Use `.venv/bin/python` for Python commands.
-- Install into the local environment with `uv pip install --python .venv/bin/python ...`.
-- Do not use bare `uv pip install ...`; on this machine it can target the active conda environment.
+- Use `uv run python` for Python commands.
+- Install into the local environment from the repository root with `uv pip install -e .`.
 - Keep generated outputs under ignored paths: `results/`, `data/`, `outputs/`, or `.work/`.
 
 ## Commands
 
 | Task | Command |
 | --- | --- |
-| Install editable package | `uv pip install --python .venv/bin/python -e .` |
-| Run all tests | `.venv/bin/python -m pytest` |
-| Run config/data/model/loss tests | `.venv/bin/python -m pytest tests/test_config.py tests/test_data.py tests/test_model.py tests/test_losses.py` |
-| Run train smoke test | `.venv/bin/python -m pytest tests/test_train_step.py` |
-| Show training CLI help | `.venv/bin/python scripts/train_sic.py --help` |
-| Run smoke training | `.venv/bin/python scripts/train_sic.py --config configs/smoke.yaml` |
-| Run evaluation tests | `.venv/bin/python -m pytest tests/test_analysis.py tests/test_evaluate.py` |
-| Show evaluation CLI help | `.venv/bin/python scripts/eval_checkpoint.py --help` |
-| Evaluate smoke checkpoint | `.venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16` |
-| Show ablation CLI help | `.venv/bin/python scripts/run_ablations.py --help` |
-| Dry-run ablations | `.venv/bin/python scripts/run_ablations.py --config configs/ablations.yaml --dry-run` |
+| Install editable package | `uv pip install -e .` |
+| Run all tests | `uv run python -m pytest` |
+| Run config/data/model/loss tests | `uv run python -m pytest tests/test_config.py tests/test_data.py tests/test_model.py tests/test_losses.py` |
+| Run train smoke test | `uv run python -m pytest tests/test_train_step.py` |
+| Show training CLI help | `uv run python scripts/train_sic.py --help` |
+| Run smoke training | `uv run python scripts/train_sic.py --config configs/smoke.yaml` |
+| Run evaluation tests | `uv run python -m pytest tests/test_analysis.py tests/test_evaluate.py` |
+| Show evaluation CLI help | `uv run python scripts/eval_checkpoint.py --help` |
+| Evaluate smoke checkpoint | `uv run python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16` |
+| Show ablation CLI help | `uv run python scripts/run_ablations.py --help` |
+| Dry-run ablations | `uv run python scripts/run_ablations.py --config configs/ablations.yaml --dry-run` |
 
 ## Current Contracts
 
@@ -65,8 +64,8 @@ Repo-specific instructions for agents working in this repository.
 After changing code, configs, scripts, or docs that mention commands, run the narrowest relevant checks. For broad core changes, run:
 
 ```bash
-.venv/bin/python -m pytest
-.venv/bin/python scripts/train_sic.py --config configs/smoke.yaml
+uv run python -m pytest
+uv run python scripts/train_sic.py --config configs/smoke.yaml
 ```
 
 Before finishing docs changes, verify referenced paths exist and grep the changed docs for stale placeholders or claims about unimplemented evaluation features.

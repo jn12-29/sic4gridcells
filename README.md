@@ -10,29 +10,27 @@ Use the local uv-managed environment in this repository.
 
 ```bash
 uv venv --python 3.12
-uv pip install --python .venv/bin/python -e .
+uv pip install -e .
 ```
 
-If dependencies need to be installed or refreshed, keep targeting the local environment explicitly:
+If dependencies need to be installed or refreshed, run the install command from the repository root so uv uses the local `.venv`:
 
 ```bash
-uv pip install --python .venv/bin/python -e .
+uv pip install -e .
 ```
-
-Do not use bare `uv pip install ...` in this workspace; on this machine it can install into the active conda environment instead of `.venv`.
 
 ## Quick Start
 
 Run the test suite:
 
 ```bash
-.venv/bin/python -m pytest
+uv run python -m pytest
 ```
 
 Run the 10-step smoke training job:
 
 ```bash
-.venv/bin/python scripts/train_sic.py --config configs/smoke.yaml
+uv run python scripts/train_sic.py --config configs/smoke.yaml
 ```
 
 Expected CLI output:
@@ -60,13 +58,13 @@ Resume an interrupted run with the same config. To extend beyond the
 checkpoint config, change only `train.max_optimizer_steps`:
 
 ```bash
-.venv/bin/python scripts/train_sic.py --config configs/medium.yaml --resume results/medium/checkpoints/step_500.pt
+uv run python scripts/train_sic.py --config configs/medium.yaml --resume results/medium/checkpoints/step_500.pt
 ```
 
 Evaluate the smoke checkpoint:
 
 ```bash
-.venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16 --seed 0
+uv run python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16 --seed 0
 ```
 
 The evaluation writes `summary.json`, `config.yaml`, and per-arena ratemap, SAC, grid-stat, trajectory, pairwise-distance, Fourier, phase, state-space, PDF, and PNG artifacts under `results/smoke/eval/`. See `docs/runbook.md` for the artifact checklist used for medium, paper-scale, and ablation runs.
