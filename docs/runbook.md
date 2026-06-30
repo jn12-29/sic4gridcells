@@ -10,12 +10,14 @@ Use `.venv/bin/python` for all Python commands in this repository. Keep generate
 .venv/bin/python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16 --seed 0
 ```
 
-The smoke evaluation writes `summary.json`, `config.yaml`, and one per-arena directory such as `arena_1p0/`. Per-arena artifacts include `rollout_arrays.npz`, `ratemaps.npz`, `occupancy.npz`, `sacs.npz`, `grid_metrics.npz`, `grid_stats.csv`, `grid_stats.json`, `module_summary.csv`, `module_summary.json`, `trajectory_stats.json`, `pairwise_distance_stats.csv`, `pairwise_distance_stats.json`, `pairwise_distance.png`, `fourier_stats.csv`, `fourier_stats.json`, `phase_summary.csv`, `phase_summary.json`, `state_space_summary.csv`, `state_space_summary.json`, `state_space_modules.npz`, `grid_score_60_histogram.png`, `scale_meters_histogram.png`, `summary.png`, `ratemaps.pdf`, and `sacs.pdf`.
+The smoke evaluation writes `summary.json`, `config.yaml`, `run.log`, `eval_events.jsonl`, and one per-arena directory such as `arena_1p0/`. Per-arena artifacts include `rollout_arrays.npz`, `ratemaps.npz`, `occupancy.npz`, `sacs.npz`, `grid_metrics.npz`, `grid_stats.csv`, `grid_stats.json`, `module_summary.csv`, `module_summary.json`, `trajectory_stats.json`, `pairwise_distance_stats.csv`, `pairwise_distance_stats.json`, `pairwise_distance.png`, `fourier_stats.csv`, `fourier_stats.json`, `phase_summary.csv`, `phase_summary.json`, `state_space_summary.csv`, `state_space_summary.json`, `state_space_modules.npz`, `grid_score_60_histogram.png`, `scale_meters_histogram.png`, `summary.png`, `ratemaps.pdf`, and `sacs.pdf`.
 
 Unvisited ratemap bins are stored as `NaN`; coverage is determined from `occupancy_counts`; visited zero responses remain `0.0`; non-finite visited responses are reported as invalid in JSON summaries. SAC/grid scoring uses finite ratemap bins as its overlap mask, grid scale is reported in both SAC pixels and meters, and random-walk step scale is arena-size based rather than shrinking with `--steps`.
 
 Evaluation defaults to `--start-mode origin`, which keeps reset model state aligned with position bins. `--start-mode uniform` is only valid for checkpoints trained with `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`. If `--seed` is omitted, evaluation uses the checkpoint config seed.
 Evaluation defaults to `--trajectory-mode reflect`, the original bounded random-walk sampler. Use `--trajectory-mode smooth_avoid_walls` for smoother wall-avoiding diagnostic trajectories closer to the paper's evaluation description.
+The training, evaluation, and ablation CLIs also accept `--log-level` for stderr logging; stdout still prints the final completion lines used by the smoke commands above.
+Each workflow writes a human-readable `run.log` plus a strict JSONL event file: `train_events.jsonl`, `eval_events.jsonl`, or `ablation_events.jsonl` at the corresponding output root.
 
 ## Medium sanity run
 
@@ -50,7 +52,7 @@ Record GPU model, CUDA device id, peak memory, throughput, final checkpoint path
 CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/run_ablations.py --config configs/ablations.yaml
 ```
 
-The ablation runner writes per-variant configs under `results/ablations/configs/`, train outputs under `results/ablations/<variant>/`, evaluation outputs under `results/ablations/<variant>/eval/`, and aggregate `results/ablations/summary.csv` plus `results/ablations/summary.json`.
+The ablation runner writes per-variant configs under `results/ablations/configs/`, train outputs under `results/ablations/<variant>/`, evaluation outputs under `results/ablations/<variant>/eval/`, `run.log`, `ablation_events.jsonl`, and aggregate `results/ablations/summary.csv` plus `results/ablations/summary.json`.
 
 ## Paper-claim checklist
 

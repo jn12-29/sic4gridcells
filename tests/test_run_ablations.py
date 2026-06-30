@@ -101,6 +101,10 @@ def test_run_ablations_invokes_train_for_enabled_variants(
     assert load_config(tmp_path / "configs" / "no_capacity.yaml").loss.lambda_cap == 0.0
     assert (tmp_path / "runs" / "summary.json").exists()
     assert (tmp_path / "runs" / "summary.csv").exists()
+    assert (tmp_path / "runs" / "run.log").exists()
+    assert (tmp_path / "runs" / "ablation_events.jsonl").exists()
+    events = _load_jsonl(tmp_path / "runs" / "ablation_events.jsonl")
+    assert {"ablation_start", "variant_validated", "variant_finished", "ablation_summary_written", "ablation_finished"} <= {row["event"] for row in events}
 
 
 def test_run_ablations_dry_run_validates_without_training(
@@ -276,6 +280,93 @@ def test_run_ablations_can_evaluate_and_summarize_finished_runs(
     summary = yaml.safe_load((tmp_path / "runs" / "summary.json").read_text(encoding="utf-8"))
     assert summary[0]["evaluation_output_dir"] == str(tmp_path / "runs" / "baseline" / "eval")
     assert summary[0]["arena_summaries"][0]["detected_modules"] == 2
+    events = _load_jsonl(tmp_path / "runs" / "ablation_events.jsonl")
+    assert {"variant_train_start", "variant_eval_start", "variant_eval_finished", "variant_finished"} <= {row["event"] for row in events}
+
+
+def test_run_ablations_records_failed_variants_with_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ablation_path = tmp_path / "ablations.yaml"
+    ablation_path.write_text(
+        yaml.safe_dump(
+            {
+                "output_root": str(tmp_path / "runs"),
+                "config_dir": str(tmp_path / "configs"),
+                "continue_on_error": True,
+                "base": _tiny_base_config(tmp_path / "base"),
+                "variants": [{"name": "baseline", "overrides": {}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_train(config_path: str | Path) -> RunResult:
+        raise RuntimeError(f"boom: {config_path}")
+
+    monkeypatch.setattr(run_ablations_script, "train", fail_train)
+
+    results = run_ablations_script.run_ablations(ablation_path)
+
+    assert results["baseline"].status == "failed"
+    assert results["baseline"].error_type == "RuntimeError"
+    assert "boom" in results["baseline"].error_message
+    summary = yaml.safe_load((tmp_path / "runs" / "summary.json").read_text(encoding="utf-8"))
+    assert summary[0]["error_type"] == "RuntimeError"
+    assert "boom" in summary[0]["error_message"]
+    events = _load_jsonl(tmp_path / "runs" / "ablation_events.jsonl")
+    assert any(row["event"] == "variant_failed" for row in events)
+    assert events[-1]["event"] == "ablation_failed"
+    assert all(row["event"] != "ablation_finished" for row in events)
+
+
+def test_failed_variant_duration_uses_variant_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ablation_path = tmp_path / "ablations.yaml"
+    ablation_path.write_text(
+        yaml.safe_dump(
+            {
+                "output_root": str(tmp_path / "runs"),
+                "config_dir": str(tmp_path / "configs"),
+                "continue_on_error": True,
+                "base": _tiny_base_config(tmp_path / "base"),
+                "variants": [
+                    {"name": "baseline", "overrides": {}},
+                    {"name": "failing", "overrides": {}},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    perf_counter_values = iter([100.0, 110.0, 115.0, 200.0, 203.0, 210.0])
+    monkeypatch.setattr(
+        run_ablations_script.time,
+        "perf_counter",
+        lambda: next(perf_counter_values),
+    )
+
+    def fake_train(config_path: str | Path) -> RunResult:
+        path = Path(config_path)
+        if path.stem == "failing":
+            raise RuntimeError("variant failed")
+        cfg = load_config(path)
+        return RunResult(
+            output_dir=Path(cfg.output_dir),
+            final_step=cfg.train.max_optimizer_steps,
+            checkpoint_path=Path(cfg.output_dir) / "checkpoints" / "step_1.pt",
+        )
+
+    monkeypatch.setattr(run_ablations_script, "train", fake_train)
+
+    run_ablations_script.run_ablations(ablation_path)
+
+    events = _load_jsonl(tmp_path / "runs" / "ablation_events.jsonl")
+    failed_event = next(row for row in events if row["event"] == "variant_failed")
+    assert failed_event["name"] == "failing"
+    assert failed_event["duration_seconds"] == 3.0
 
 
 def test_unknown_ablation_override_key_fails(tmp_path: Path) -> None:
@@ -349,3 +440,7 @@ def _tiny_base_config(output_dir: Path) -> dict:
             "log_every": 1,
         },
     }
+
+
+def _load_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]

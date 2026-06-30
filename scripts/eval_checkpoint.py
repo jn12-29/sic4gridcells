@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from sic4gridcells.evaluate import evaluate_checkpoint
+from sic4gridcells.logging_utils import VALID_LOG_LEVELS, cli_logging_context
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,24 +33,31 @@ def parse_args() -> argparse.Namespace:
         default="reflect",
         help="Evaluation trajectory sampler.",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=VALID_LOG_LEVELS,
+        help="Console log level for stderr logging.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     arena_sizes = tuple(float(item) for item in args.arena_sizes.split(",") if item)
-    result = evaluate_checkpoint(
-        args.checkpoint,
-        args.output_dir,
-        device=args.device,
-        arena_sizes=arena_sizes,
-        nbins=args.nbins,
-        n_trajectories=args.trajectories,
-        steps_per_trajectory=args.steps,
-        start_mode=args.start_mode,
-        trajectory_mode=args.trajectory_mode,
-        seed=args.seed,
-    )
+    with cli_logging_context(args.log_level):
+        result = evaluate_checkpoint(
+            args.checkpoint,
+            args.output_dir,
+            device=args.device,
+            arena_sizes=arena_sizes,
+            nbins=args.nbins,
+            n_trajectories=args.trajectories,
+            steps_per_trajectory=args.steps,
+            start_mode=args.start_mode,
+            trajectory_mode=args.trajectory_mode,
+            seed=args.seed,
+        )
     print(f"finished output_dir={result.output_dir}")
 
 

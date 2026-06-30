@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from sic4gridcells.config import (
     save_effective_config,
     validate_config,
 )
+from sic4gridcells.logging_utils import JsonlEventLogger, elapsed_seconds, log_file_context
 from sic4gridcells.model import VelocityConditionedRNN
 from sic4gridcells.plotting import (
     save_metric_histogram,
@@ -33,6 +36,8 @@ VALID_TRAJECTORY_MODES = {"reflect", "smooth_avoid_walls"}
 GRID_MODULE_SCORE_THRESHOLD = 0.0
 GRID_MODULE_SCALE_RATIO = 1.2
 PAIRWISE_DISTANCE_SAMPLE_PAIRS = 20000
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -55,175 +60,289 @@ def evaluate_checkpoint(
     trajectory_mode: str = "reflect",
     seed: int | None = None,
 ) -> EvaluationResult:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    cfg = _config_from_checkpoint(checkpoint["config"])
-    device_t = resolve_device(device)
-    model = VelocityConditionedRNN(cfg).to(device_t)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
-    if start_mode not in {"origin", "uniform"}:
-        raise ValueError("start_mode must be 'origin' or 'uniform'")
-    if trajectory_mode not in VALID_TRAJECTORY_MODES:
-        raise ValueError(
-            "trajectory_mode must be one of: "
-            + ", ".join(sorted(VALID_TRAJECTORY_MODES))
-        )
-    if start_mode == "uniform" and cfg.model.initial_position_encoding != "additive_mlp":
-        raise ValueError(
-            "start_mode='uniform' requires a checkpoint trained with "
-            "model.initial_position_encoding='additive_mlp'"
-        )
-    if start_mode == "uniform" and cfg.data.initial_position_mode != "uniform_box":
-        raise ValueError(
-            "start_mode='uniform' requires a checkpoint trained with "
-            "data.initial_position_mode='uniform_box'"
-        )
-
-    out_dir = Path(output_dir) if output_dir is not None else Path(checkpoint_path).with_suffix("")
+    checkpoint_path = Path(checkpoint_path)
+    out_dir = Path(output_dir) if output_dir is not None else checkpoint_path.with_suffix("")
     out_dir.mkdir(parents=True, exist_ok=True)
-    save_effective_config(cfg, out_dir / "config.yaml")
-    (out_dir / "arena_summaries").mkdir(exist_ok=True)
-    eval_seed = cfg.seed if seed is None else int(seed)
-    generator = _make_torch_generator(device_t, eval_seed)
+    start_time = time.perf_counter()
+    with log_file_context(out_dir / "run.log", logger_names=("sic4gridcells",), mode="w"):
+        with JsonlEventLogger(out_dir / "eval_events.jsonl", mode="w") as events:
+            try:
+                logger.info(
+                    "evaluation started checkpoint=%s output_dir=%s requested_device=%s",
+                    checkpoint_path,
+                    out_dir,
+                    device,
+                )
+                events.emit(
+                    "eval_start",
+                    status="started",
+                    checkpoint_path=checkpoint_path,
+                    output_dir=out_dir,
+                    requested_device=device,
+                    arena_sizes=arena_sizes,
+                    nbins=nbins,
+                    trajectories=n_trajectories,
+                    steps=steps_per_trajectory,
+                    start_mode=start_mode,
+                    trajectory_mode=trajectory_mode,
+                    requested_seed=seed,
+                )
+                checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                cfg = _config_from_checkpoint(checkpoint["config"])
+                device_t = resolve_device(device)
+                model = VelocityConditionedRNN(cfg).to(device_t)
+                model.load_state_dict(checkpoint["model_state_dict"])
+                model.eval()
+                if start_mode not in {"origin", "uniform"}:
+                    raise ValueError("start_mode must be 'origin' or 'uniform'")
+                if trajectory_mode not in VALID_TRAJECTORY_MODES:
+                    raise ValueError(
+                        "trajectory_mode must be one of: "
+                        + ", ".join(sorted(VALID_TRAJECTORY_MODES))
+                    )
+                if (
+                    start_mode == "uniform"
+                    and cfg.model.initial_position_encoding != "additive_mlp"
+                ):
+                    raise ValueError(
+                        "start_mode='uniform' requires a checkpoint trained with "
+                        "model.initial_position_encoding='additive_mlp'"
+                    )
+                if start_mode == "uniform" and cfg.data.initial_position_mode != "uniform_box":
+                    raise ValueError(
+                        "start_mode='uniform' requires a checkpoint trained with "
+                        "data.initial_position_mode='uniform_box'"
+                    )
 
-    result_dirs: dict[float, Path] = {}
-    summary_rows: list[dict[str, object]] = []
-    with torch.no_grad():
-        for arena_index, arena_size in enumerate(arena_sizes):
-            arena_dir = out_dir / f"arena_{_format_arena_size(arena_size)}"
-            arena_dir.mkdir(parents=True, exist_ok=True)
-            result_dirs[arena_size] = arena_dir
-            positions, hidden_states, velocities = _run_bounded_random_walks(
-                model,
-                device_t,
-                arena_size=arena_size,
-                n_trajectories=n_trajectories,
-                steps_per_trajectory=steps_per_trajectory,
-                start_mode=start_mode,
-                trajectory_mode=trajectory_mode,
-                generator=generator,
-            )
-            scorer = GridScorer(
-                nbins=nbins,
-                coords_range=[[-arena_size / 2, arena_size / 2], [-arena_size / 2, arena_size / 2]],
-            )
-            ratemaps, occupancy_counts = _accumulate_ratemaps(
-                positions,
-                hidden_states,
-                arena_size=arena_size,
-                nbins=nbins,
-            )
-            coverage_summary = _summarize_coverage(occupancy_counts)
-            unit_response_stats = _summarize_unit_responses(ratemaps, occupancy_counts)
-            scores = scorer.get_scores_batch(ratemaps)
-            grid_metrics = scorer.calculate_grid_metrics(scores.sacs)
-            scale_meters = _scale_pixels_to_meters(
-                grid_metrics.scale_pixels,
-                arena_size=arena_size,
-                nbins=nbins,
-            )
-            module_ids = _assign_scale_modules(
-                scale_meters,
-                scores.score_60,
-                unit_response_stats,
-            )
-            module_summary = _summarize_modules(
-                module_ids,
-                scale_meters,
-                grid_metrics.orientation_degrees,
-                scores.score_60,
-            )
-            trajectory_stats = _summarize_trajectory_stats(
-                positions,
-                velocities,
-                trajectory_mode=trajectory_mode,
-            )
-            pairwise_stats = _summarize_pairwise_neural_distances(
-                positions,
-                hidden_states,
-                sigma_x=cfg.loss.sigma_x,
-                seed=eval_seed + arena_index,
-            )
-            fourier_stats = _summarize_fourier_structure(
-                ratemaps,
-                scale_meters,
-                module_ids,
-                arena_size=arena_size,
-            )
-            phase_summary = _summarize_phase_tiling(
-                ratemaps,
-                scale_meters,
-                module_ids,
-                arena_size=arena_size,
-            )
-            state_space_summary, state_space_arrays = _summarize_state_space(
-                hidden_states,
-                module_ids,
-            )
-            _write_arena_artifacts(
-                arena_dir,
-                positions=positions,
-                velocities=velocities,
-                hidden_states=hidden_states,
-                ratemaps=ratemaps,
-                occupancy_counts=occupancy_counts,
-                sacs=scores.sacs,
-                score_60=scores.score_60,
-                score_90=scores.score_90,
-                scale_pixels=grid_metrics.scale_pixels,
-                scale_meters=scale_meters,
-                orientation_degrees=grid_metrics.orientation_degrees,
-                peak_counts=grid_metrics.peak_counts,
-                module_ids=module_ids,
-                module_summary=module_summary,
-                trajectory_stats=trajectory_stats,
-                pairwise_stats=pairwise_stats,
-                fourier_stats=fourier_stats,
-                phase_summary=phase_summary,
-                state_space_summary=state_space_summary,
-                state_space_arrays=state_space_arrays,
-                mask_60=scores.mask_60,
-                mask_90=scores.mask_90,
-                unit_response_stats=unit_response_stats,
-            )
-            summary_rows.append(
-                {
-                    "arena_size": arena_size,
-                    "mean_grid_score_60": _json_float(np.nanmean(scores.score_60)),
-                    "mean_grid_score_90": _json_float(np.nanmean(scores.score_90)),
-                    "mean_scale": _json_float(_safe_nanmean(grid_metrics.scale_pixels)),
-                    "mean_scale_pixels": _json_float(_safe_nanmean(grid_metrics.scale_pixels)),
-                    "mean_scale_meters": _json_float(_safe_nanmean(scale_meters)),
-                    "mean_orientation_degrees": _json_float(
-                        _circular_nanmean(grid_metrics.orientation_degrees, period=60.0)
-                    ),
-                    "detected_modules": int(len(module_summary)),
-                    "state_space_modules": int(len(state_space_summary)),
-                    "near_spatial_pair_count": int(
-                        pairwise_stats["summary"]["near_spatial_pair_count"]
-                    ),
-                    "near_spatial_mean_neural_distance": _json_float(
-                        pairwise_stats["summary"]["near_spatial_mean_neural_distance"]
-                    ),
-                    **coverage_summary,
-                    **_unit_response_counts(unit_response_stats),
-                }
-            )
-    with (out_dir / "summary.json").open("w", encoding="utf-8") as handle:
-        json.dump(
-            {
-                "checkpoint": str(Path(checkpoint_path)),
-                "config": asdict(cfg),
-                "evaluation_seed": eval_seed,
-                "trajectory_mode": trajectory_mode,
-                "arena_summaries": summary_rows,
-            },
-            handle,
-            indent=2,
-            sort_keys=True,
-            allow_nan=False,
-        )
-    return EvaluationResult(output_dir=out_dir, checkpoint_path=Path(checkpoint_path), arena_dirs=result_dirs)
+                save_effective_config(cfg, out_dir / "config.yaml")
+                (out_dir / "arena_summaries").mkdir(exist_ok=True)
+                eval_seed = cfg.seed if seed is None else int(seed)
+                generator = _make_torch_generator(device_t, eval_seed)
+                logger.info(
+                    "evaluation config loaded device=%s eval_seed=%s arenas=%s",
+                    device_t,
+                    eval_seed,
+                    ",".join(str(value) for value in arena_sizes),
+                )
+                events.emit(
+                    "eval_config_loaded",
+                    status="loaded",
+                    resolved_device=str(device_t),
+                    evaluation_seed=eval_seed,
+                    config_path=out_dir / "config.yaml",
+                    checkpoint_step=checkpoint.get("step"),
+                )
+
+                result_dirs: dict[float, Path] = {}
+                summary_rows: list[dict[str, object]] = []
+                with torch.no_grad():
+                    for arena_index, arena_size in enumerate(arena_sizes):
+                        arena_dir = out_dir / f"arena_{_format_arena_size(arena_size)}"
+                        arena_dir.mkdir(parents=True, exist_ok=True)
+                        result_dirs[arena_size] = arena_dir
+                        logger.info(
+                            "arena evaluation started arena_size=%s arena_dir=%s",
+                            arena_size,
+                            arena_dir,
+                        )
+                        events.emit(
+                            "eval_arena_start",
+                            status="started",
+                            arena_size=arena_size,
+                            arena_dir=arena_dir,
+                            arena_index=arena_index,
+                        )
+                        positions, hidden_states, velocities = _run_bounded_random_walks(
+                            model,
+                            device_t,
+                            arena_size=arena_size,
+                            n_trajectories=n_trajectories,
+                            steps_per_trajectory=steps_per_trajectory,
+                            start_mode=start_mode,
+                            trajectory_mode=trajectory_mode,
+                            generator=generator,
+                        )
+                        scorer = GridScorer(
+                            nbins=nbins,
+                            coords_range=[
+                                [-arena_size / 2, arena_size / 2],
+                                [-arena_size / 2, arena_size / 2],
+                            ],
+                        )
+                        ratemaps, occupancy_counts = _accumulate_ratemaps(
+                            positions,
+                            hidden_states,
+                            arena_size=arena_size,
+                            nbins=nbins,
+                        )
+                        coverage_summary = _summarize_coverage(occupancy_counts)
+                        unit_response_stats = _summarize_unit_responses(
+                            ratemaps,
+                            occupancy_counts,
+                        )
+                        scores = scorer.get_scores_batch(ratemaps)
+                        grid_metrics = scorer.calculate_grid_metrics(scores.sacs)
+                        scale_meters = _scale_pixels_to_meters(
+                            grid_metrics.scale_pixels,
+                            arena_size=arena_size,
+                            nbins=nbins,
+                        )
+                        module_ids = _assign_scale_modules(
+                            scale_meters,
+                            scores.score_60,
+                            unit_response_stats,
+                        )
+                        module_summary = _summarize_modules(
+                            module_ids,
+                            scale_meters,
+                            grid_metrics.orientation_degrees,
+                            scores.score_60,
+                        )
+                        trajectory_stats = _summarize_trajectory_stats(
+                            positions,
+                            velocities,
+                            trajectory_mode=trajectory_mode,
+                        )
+                        pairwise_stats = _summarize_pairwise_neural_distances(
+                            positions,
+                            hidden_states,
+                            sigma_x=cfg.loss.sigma_x,
+                            seed=eval_seed + arena_index,
+                        )
+                        fourier_stats = _summarize_fourier_structure(
+                            ratemaps,
+                            scale_meters,
+                            module_ids,
+                            arena_size=arena_size,
+                        )
+                        phase_summary = _summarize_phase_tiling(
+                            ratemaps,
+                            scale_meters,
+                            module_ids,
+                            arena_size=arena_size,
+                        )
+                        state_space_summary, state_space_arrays = _summarize_state_space(
+                            hidden_states,
+                            module_ids,
+                        )
+                        _write_arena_artifacts(
+                            arena_dir,
+                            positions=positions,
+                            velocities=velocities,
+                            hidden_states=hidden_states,
+                            ratemaps=ratemaps,
+                            occupancy_counts=occupancy_counts,
+                            sacs=scores.sacs,
+                            score_60=scores.score_60,
+                            score_90=scores.score_90,
+                            scale_pixels=grid_metrics.scale_pixels,
+                            scale_meters=scale_meters,
+                            orientation_degrees=grid_metrics.orientation_degrees,
+                            peak_counts=grid_metrics.peak_counts,
+                            module_ids=module_ids,
+                            module_summary=module_summary,
+                            trajectory_stats=trajectory_stats,
+                            pairwise_stats=pairwise_stats,
+                            fourier_stats=fourier_stats,
+                            phase_summary=phase_summary,
+                            state_space_summary=state_space_summary,
+                            state_space_arrays=state_space_arrays,
+                            mask_60=scores.mask_60,
+                            mask_90=scores.mask_90,
+                            unit_response_stats=unit_response_stats,
+                        )
+                        arena_summary = {
+                            "arena_size": arena_size,
+                            "mean_grid_score_60": _json_float(np.nanmean(scores.score_60)),
+                            "mean_grid_score_90": _json_float(np.nanmean(scores.score_90)),
+                            "mean_scale": _json_float(
+                                _safe_nanmean(grid_metrics.scale_pixels)
+                            ),
+                            "mean_scale_pixels": _json_float(
+                                _safe_nanmean(grid_metrics.scale_pixels)
+                            ),
+                            "mean_scale_meters": _json_float(
+                                _safe_nanmean(scale_meters)
+                            ),
+                            "mean_orientation_degrees": _json_float(
+                                _circular_nanmean(
+                                    grid_metrics.orientation_degrees,
+                                    period=60.0,
+                                )
+                            ),
+                            "detected_modules": int(len(module_summary)),
+                            "state_space_modules": int(len(state_space_summary)),
+                            "near_spatial_pair_count": int(
+                                pairwise_stats["summary"]["near_spatial_pair_count"]
+                            ),
+                            "near_spatial_mean_neural_distance": _json_float(
+                                pairwise_stats["summary"][
+                                    "near_spatial_mean_neural_distance"
+                                ]
+                            ),
+                            **coverage_summary,
+                            **_unit_response_counts(unit_response_stats),
+                        }
+                        summary_rows.append(arena_summary)
+                        logger.info(
+                            "arena evaluation finished arena_size=%s coverage=%s active_units=%s",
+                            arena_size,
+                            arena_summary["coverage_fraction"],
+                            arena_summary["active_units"],
+                        )
+                        events.emit(
+                            "eval_arena_finished",
+                            status="finished",
+                            arena_size=arena_size,
+                            arena_dir=arena_dir,
+                            arena_index=arena_index,
+                            summary=arena_summary,
+                        )
+                summary_path = out_dir / "summary.json"
+                with summary_path.open("w", encoding="utf-8") as handle:
+                    json.dump(
+                        {
+                            "checkpoint": str(checkpoint_path),
+                            "config": asdict(cfg),
+                            "evaluation_seed": eval_seed,
+                            "trajectory_mode": trajectory_mode,
+                            "arena_summaries": summary_rows,
+                        },
+                        handle,
+                        indent=2,
+                        sort_keys=True,
+                        allow_nan=False,
+                    )
+                logger.info("evaluation summary written path=%s", summary_path)
+                events.emit(
+                    "eval_summary_written",
+                    status="written",
+                    summary_path=summary_path,
+                    arena_count=len(summary_rows),
+                )
+                result = EvaluationResult(
+                    output_dir=out_dir,
+                    checkpoint_path=checkpoint_path,
+                    arena_dirs=result_dirs,
+                )
+                logger.info("evaluation finished output_dir=%s", result.output_dir)
+                events.emit(
+                    "eval_finished",
+                    status="finished",
+                    output_dir=result.output_dir,
+                    duration_seconds=elapsed_seconds(start_time),
+                )
+                return result
+            except Exception as exc:
+                logger.exception("evaluation failed")
+                events.emit(
+                    "eval_failed",
+                    status="failed",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    duration_seconds=elapsed_seconds(start_time),
+                )
+                raise
 
 
 def _run_bounded_random_walks(

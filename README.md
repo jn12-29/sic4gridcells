@@ -42,9 +42,13 @@ finished step=10 output_dir=results/smoke
 checkpoint=results/smoke/checkpoints/step_10.pt
 ```
 
+The CLI also accepts `--log-level` for stderr logging; runtime logs are written to `results/smoke/run.log` and structured events to `results/smoke/train_events.jsonl`.
+
 The smoke run writes:
 
 - `results/smoke/config.yaml`
+- `results/smoke/run.log`
+- `results/smoke/train_events.jsonl`
 - `results/smoke/metrics.jsonl`
 - `results/smoke/tensorboard/`
 - `results/smoke/checkpoints/step_5.pt`
@@ -66,9 +70,12 @@ Evaluate the smoke checkpoint:
 ```
 
 The evaluation writes `summary.json`, `config.yaml`, and per-arena ratemap, SAC, grid-stat, trajectory, pairwise-distance, Fourier, phase, state-space, PDF, and PNG artifacts under `results/smoke/eval/`. See `docs/runbook.md` for the artifact checklist used for medium, paper-scale, and ablation runs.
+It also writes `run.log` and `eval_events.jsonl` alongside `summary.json`.
 
 Evaluation defaults to `--start-mode origin`, which keeps reset model state aligned with position bins. `--start-mode uniform` is only valid for checkpoints trained with `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`. If `--seed` is omitted, evaluation uses the checkpoint config seed.
 Evaluation also defaults to `--trajectory-mode reflect` for backward-compatible bounded walks. Use `--trajectory-mode smooth_avoid_walls` for smoother wall-avoiding diagnostic trajectories.
+
+The evaluation CLI also accepts `--log-level`; runtime logs go to `run.log` and structured events go to `eval_events.jsonl` beside the evaluation summary.
 
 ## Configs
 
@@ -76,6 +83,7 @@ Evaluation also defaults to `--trajectory-mode reflect` for backward-compatible 
 - `configs/medium.yaml`: medium sanity-run profile (`B=16`, `T=30`, `N=64`).
 - `configs/sic_paper.yaml`: paper-scale training hyperparameters from the reproduction plan.
 - `configs/ablations.yaml`: ablation orchestration plan for `scripts/run_ablations.py`.
+- `scripts/run_ablations.py` accepts `--log-level`; the ablation root writes `run.log` and `ablation_events.jsonl`.
 
 Important training semantics:
 

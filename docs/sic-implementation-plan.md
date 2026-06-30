@@ -30,6 +30,7 @@ src/sic4gridcells/config.py
 src/sic4gridcells/data.py
 src/sic4gridcells/model.py
 src/sic4gridcells/losses.py
+src/sic4gridcells/logging_utils.py
 src/sic4gridcells/train.py
 scripts/train_sic.py
 tests/test_config.py
@@ -169,6 +170,8 @@ docs/runbook.md
 
 - `train(config_path: str) -> RunResult`。
 - 输出目录包含：
+  - `run.log`：训练生命周期和进度日志。
+  - `train_events.jsonl`：严格 JSONL 的结构化事件流。
   - `config.yaml`：effective config。
   - `metrics.jsonl`：每步或每 `log_every` 的 loss、loss components、lr、grad norm、zero-norm fraction、pair counts。
   - `tensorboard/`。
@@ -184,6 +187,13 @@ docs/runbook.md
 6. 定期保存 checkpoint 和 metrics。
 
 `scripts/train_sic.py` 只做 CLI 参数解析并调用 `sic4gridcells.train.train`。
+
+### Logging
+
+- `scripts/train_sic.py`、`scripts/eval_checkpoint.py` 和 `scripts/run_ablations.py` 都接受 `--log-level`，用于 stderr 端的标准 logging。
+- 运行时的 human-readable 日志写入各自的 `run.log`。
+- 结构化事件写入各自的 `*_events.jsonl`，行级记录只包含可 JSON 序列化字段，非有限数值会写成 `null`。
+- resume 时，训练的事件日志会按 checkpoint step 裁剪，和 `metrics.jsonl` 的裁剪逻辑保持一致。
 
 ## 分阶段执行计划
 
@@ -248,6 +258,7 @@ docs/runbook.md
 - `src/sic4gridcells/analysis.py` 最小移植 GridScorer 风格的 ratemap、SAC、grid score 和 grid scale 逻辑。
 - `src/sic4gridcells/plotting.py` 输出 `summary.png`、`ratemaps.pdf`、`sacs.pdf` 和指标直方图。
 - `scripts/eval_checkpoint.py` 是薄 CLI；训练 config 从 checkpoint 中读取，不另传 `--config`。
+- 评估输出包含 `run.log` 和 `eval_events.jsonl`，并继续写出 `summary.json`、`config.yaml` 和 per-arena artifact。
 - `ratemaps.npz` 将未访问空间 bin 保存为 `NaN`；访问过但响应为零的 bin 保持 `0.0`。
 - `occupancy.npz` 保存 `occupancy_counts`，是 coverage 指标的 source of truth；访问过的 bin 若出现非有限响应，归类为 invalid response，而不是 coverage gap。
 - `summary.json` 输出 `visited_bins`、`unvisited_bins`、`total_bins`、`coverage_fraction`、`units_without_coverage`、`zero_response_units`、`invalid_response_units` 和 `active_units`。
@@ -297,6 +308,7 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/train_sic.py --config configs/me
 - `configs/sic_paper.yaml` 保留 paper-scale 训练参数。
 - `configs/ablations.yaml` 和 `scripts/run_ablations.py` 提供 config-driven ablation orchestration、可选训练后评估和 aggregate summary。
 - `data.augmentation_mode: identity` 支持 no-permutation augmentation 消融。
+- ablation 根输出目录写 `run.log` 和 `ablation_events.jsonl`；每个 variant 的训练和评估继续复用各自的 run/event 日志契约。
 
 验证：
 

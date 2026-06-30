@@ -7,6 +7,7 @@ import torch
 import pytest
 import yaml
 
+import scripts.train_sic as train_cli
 from sic4gridcells.train import train, _write_metrics
 
 
@@ -66,6 +67,8 @@ def test_train_smoke_writes_outputs(tmp_path: Path) -> None:
     assert result.final_step == 2
     assert (output_dir / "config.yaml").exists()
     assert (output_dir / "metrics.jsonl").exists()
+    assert (output_dir / "run.log").exists()
+    assert (output_dir / "train_events.jsonl").exists()
     assert (output_dir / "checkpoints" / "step_2.pt").exists()
     assert any((output_dir / "tensorboard").glob("events.out.tfevents.*"))
     checkpoint = torch.load(output_dir / "checkpoints" / "step_2.pt", map_location="cpu")
@@ -95,6 +98,48 @@ def test_train_smoke_writes_outputs(tmp_path: Path) -> None:
     for key in expected_metrics:
         assert math.isfinite(rows[-1][key])
     assert rows[-1]["stats/separation_pairs"] >= 0
+    events = _load_jsonl(output_dir / "train_events.jsonl")
+    assert {"train_start", "train_config_saved", "tensorboard_started", "checkpoint_saved", "tensorboard_closed", "train_finished"} <= {row["event"] for row in events}
+    assert all("timestamp" in row for row in events)
+
+
+def test_train_logs_on_requested_cadence(tmp_path: Path) -> None:
+    config_path = tmp_path / "cadence.yaml"
+    output_dir = tmp_path / "cadence-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=5)
+    config["train"]["log_every"] = 2
+    config["train"]["checkpoint_every"] = 5
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    train(config_path)
+
+    metric_rows = _load_jsonl(output_dir / "metrics.jsonl")
+    event_rows = _load_jsonl(output_dir / "train_events.jsonl")
+    assert [row["step"] for row in metric_rows] == [1.0, 2.0, 4.0, 5.0]
+    assert [row["step"] for row in event_rows if row["event"] == "train_metrics"] == [1, 2, 4, 5]
+
+
+def test_fresh_early_failure_replaces_previous_event_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "early-failure.yaml"
+    output_dir = tmp_path / "early-failure-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=1)
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    train(config_path)
+
+    def fail_resolve_device(device: str) -> torch.device:
+        raise RuntimeError(f"cannot resolve {device}")
+
+    monkeypatch.setattr("sic4gridcells.train.resolve_device", fail_resolve_device)
+
+    with pytest.raises(RuntimeError, match="cannot resolve"):
+        train(config_path)
+
+    events = _load_jsonl(output_dir / "train_events.jsonl")
+    assert [row["event"] for row in events] == ["train_failed"]
+    assert events[0]["error_type"] == "RuntimeError"
 
 
 def test_train_with_initial_position_encoder(tmp_path: Path) -> None:
@@ -174,6 +219,9 @@ def test_train_can_resume_from_checkpoint_to_larger_max_step(tmp_path: Path) -> 
         for line in (output_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert [row["step"] for row in rows] == [1.0, 2.0, 3.0]
+    events = _load_jsonl(output_dir / "train_events.jsonl")
+    assert [row["step"] for row in events if row["event"] == "train_metrics"] == [1, 2, 3]
+    assert any(row["event"] == "train_resume_loaded" for row in events)
     checkpoint = torch.load(resumed_result.checkpoint_path, map_location="cpu")
     assert checkpoint["step"] == 3
     assert "generator_state" in checkpoint
@@ -226,6 +274,8 @@ def test_resume_trims_metrics_to_checkpoint_step(tmp_path: Path) -> None:
         for line in (output_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert [row["step"] for row in rows] == [1.0, 2.0, 3.0]
+    events = _load_jsonl(output_dir / "train_events.jsonl")
+    assert [row["step"] for row in events if row["event"] == "train_metrics"] == [1, 2, 3]
 
 
 def test_noop_resume_trims_metrics_to_checkpoint_step(tmp_path: Path) -> None:
@@ -249,6 +299,16 @@ def test_noop_resume_trims_metrics_to_checkpoint_step(tmp_path: Path) -> None:
         for line in (output_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert [row["step"] for row in rows] == [1.0]
+    events = _load_jsonl(output_dir / "train_events.jsonl")
+    finished_events = [row for row in events if row["event"] == "train_finished"]
+    assert finished_events[-1]["status"] == "already_complete"
+    assert finished_events[-1]["final_step"] == 1
+    assert [row["step"] for row in events if row["event"] == "train_metrics"] == [1]
+    assert [row["step"] for row in events if row["event"] == "checkpoint_saved"] == [1]
+    assert len([row for row in events if row["event"] == "train_resume_loaded"]) == 1
+    assert len([row for row in events if row["event"] == "train_start"]) == 2
+    assert len([row for row in events if row["event"] == "tensorboard_started"]) == 1
+    assert len([row for row in events if row["event"] == "tensorboard_closed"]) == 1
 
 
 def test_write_metrics_serializes_non_finite_values_as_strict_json() -> None:
@@ -332,3 +392,48 @@ def _tiny_training_config(output_dir: Path, max_optimizer_steps: int) -> dict:
             "log_every": 1,
         },
     }
+
+
+def _load_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_train_cli_keeps_stdout_completion_lines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "cli.yaml"
+    output_dir = tmp_path / "cli-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=1)
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["train_sic.py", "--config", str(config_path), "--log-level", "INFO"],
+    )
+
+    train_cli.main()
+
+    output = capsys.readouterr().out.strip().splitlines()
+    assert output[0].startswith("finished step=1 output_dir=")
+    assert output[1].startswith("checkpoint=")
+
+
+def test_train_cli_log_level_debug_reaches_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "cli-debug.yaml"
+    output_dir = tmp_path / "cli-debug-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=1)
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["train_sic.py", "--config", str(config_path), "--log-level", "DEBUG"],
+    )
+
+    train_cli.main()
+
+    stderr = capsys.readouterr().err
+    assert "DEBUG sic4gridcells.train: training metrics step=1" in stderr

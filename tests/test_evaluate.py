@@ -84,6 +84,9 @@ def test_evaluate_checkpoint_writes_artifacts(tmp_path: Path) -> None:
     assert (arena_dir / "ratemaps.pdf").exists()
     assert (arena_dir / "sacs.pdf").exists()
     assert (result.output_dir / "summary.json").exists()
+    assert (result.output_dir / "config.yaml").exists()
+    assert (result.output_dir / "run.log").exists()
+    assert (result.output_dir / "eval_events.jsonl").exists()
     summary = _load_strict_json(result.output_dir / "summary.json")
     grid_stats = _load_strict_json(arena_dir / "grid_stats.json")
     _load_strict_json(arena_dir / "fourier_stats.json")
@@ -134,6 +137,9 @@ def test_evaluate_checkpoint_writes_artifacts(tmp_path: Path) -> None:
     assert "detected_modules" in arena_summary
     assert "state_space_modules" in arena_summary
     assert "near_spatial_pair_count" in arena_summary
+    events = _load_jsonl(result.output_dir / "eval_events.jsonl")
+    assert {"eval_start", "eval_config_loaded", "eval_arena_start", "eval_arena_finished", "eval_summary_written", "eval_finished"} <= {row["event"] for row in events}
+    assert all("timestamp" in row for row in events)
 
 
 def test_accumulate_ratemaps_returns_occupancy_and_preserves_nan_for_unvisited_bins() -> None:
@@ -668,6 +674,10 @@ def _load_strict_json(path: Path):
             f"non-standard JSON constant {value!r} in {path}"
         ),
     )
+
+
+def _load_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 class _CapturingModel:

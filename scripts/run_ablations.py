@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,16 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from sic4gridcells.config import Config, load_config
 from sic4gridcells.evaluate import EvaluationResult, evaluate_checkpoint
+from sic4gridcells.logging_utils import (
+    JsonlEventLogger,
+    VALID_LOG_LEVELS,
+    cli_logging_context,
+    elapsed_seconds,
+    log_file_context,
+)
 from sic4gridcells.train import RunResult, train
+
+logger = logging.getLogger("sic4gridcells.run_ablations")
 
 
 @dataclass(frozen=True)
@@ -33,6 +44,8 @@ class AblationResult:
     run_result: RunResult | None = None
     evaluation_result: EvaluationResult | None = None
     reason: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,12 +61,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip configured post-training evaluation.",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=VALID_LOG_LEVELS,
+        help="Console log level for stderr logging.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    results = run_ablations(args.config, dry_run=args.dry_run, skip_evaluation=args.skip_eval)
+    with cli_logging_context(args.log_level):
+        results = run_ablations(args.config, dry_run=args.dry_run, skip_evaluation=args.skip_eval)
     for name, result in results.items():
         if result.status == "validated":
             print(f"validated {name}: {result.config_path}")
@@ -85,34 +105,186 @@ def run_ablations(
         and bool(evaluation_cfg.get("enabled", False))
         and not skip_evaluation
     )
-    for run in runs:
-        if not run.enabled:
-            results[run.name] = AblationResult(
-                status="skipped",
-                config_path=run.config_path,
-                reason=run.reason,
+    output_root = Path(str(plan.get("output_root", "results/ablations")))
+    start_time = time.perf_counter()
+    error_to_raise: Exception | None = None
+    with log_file_context(output_root / "run.log", logger_names=("sic4gridcells",), mode="w"):
+        with JsonlEventLogger(output_root / "ablation_events.jsonl", mode="w") as events:
+            logger.info(
+                "ablation run started output_root=%s dry_run=%s skip_evaluation=%s",
+                output_root,
+                dry_run,
+                skip_evaluation,
             )
-            continue
-        load_config(run.config_path)
-        if dry_run:
-            results[run.name] = AblationResult(status="validated", config_path=run.config_path)
-            continue
-        try:
-            run_result = train(run.config_path)
-            evaluation_result = None
-            if evaluation_enabled:
-                evaluation_result = _evaluate_ablation_run(run_result, evaluation_cfg)
-            results[run.name] = AblationResult(
-                status="finished",
-                config_path=run.config_path,
-                run_result=run_result,
-                evaluation_result=evaluation_result,
+            events.emit(
+                "ablation_start",
+                status="started",
+                config_path=Path(config_path),
+                output_root=output_root,
+                dry_run=dry_run,
+                skip_evaluation=skip_evaluation,
+                variant_count=len(runs),
+                continue_on_error=continue_on_error,
             )
-        except Exception:
-            if not continue_on_error:
-                raise
-            results[run.name] = AblationResult(status="failed", config_path=run.config_path)
-    _write_ablation_summary(plan, results)
+            for run in runs:
+                logger.info("variant scheduled name=%s enabled=%s", run.name, run.enabled)
+                if not run.enabled:
+                    results[run.name] = AblationResult(
+                        status="skipped",
+                        config_path=run.config_path,
+                        reason=run.reason,
+                    )
+                    logger.info("variant skipped name=%s reason=%s", run.name, run.reason)
+                    events.emit(
+                        "variant_skipped",
+                        status="skipped",
+                        name=run.name,
+                        config_path=run.config_path,
+                        reason=run.reason,
+                    )
+                    continue
+                run_start = time.perf_counter()
+                try:
+                    load_config(run.config_path)
+                    logger.info("variant config validated name=%s path=%s", run.name, run.config_path)
+                    events.emit(
+                        "variant_validated",
+                        status="validated",
+                        name=run.name,
+                        config_path=run.config_path,
+                    )
+                    if dry_run:
+                        results[run.name] = AblationResult(
+                            status="validated",
+                            config_path=run.config_path,
+                        )
+                        continue
+                    logger.info("variant training started name=%s", run.name)
+                    events.emit(
+                        "variant_train_start",
+                        status="started",
+                        name=run.name,
+                        config_path=run.config_path,
+                    )
+                    run_result = train(run.config_path)
+                    evaluation_result = None
+                    if evaluation_enabled:
+                        logger.info(
+                            "variant evaluation started name=%s checkpoint=%s",
+                            run.name,
+                            run_result.checkpoint_path,
+                        )
+                        events.emit(
+                            "variant_eval_start",
+                            status="started",
+                            name=run.name,
+                            checkpoint_path=run_result.checkpoint_path,
+                        )
+                        evaluation_result = _evaluate_ablation_run(run_result, evaluation_cfg)
+                        logger.info(
+                            "variant evaluation finished name=%s output_dir=%s",
+                            run.name,
+                            evaluation_result.output_dir,
+                        )
+                        events.emit(
+                            "variant_eval_finished",
+                            status="finished",
+                            name=run.name,
+                            evaluation_output_dir=evaluation_result.output_dir,
+                        )
+                    results[run.name] = AblationResult(
+                        status="finished",
+                        config_path=run.config_path,
+                        run_result=run_result,
+                        evaluation_result=evaluation_result,
+                    )
+                    logger.info(
+                        "variant finished name=%s step=%s output_dir=%s",
+                        run.name,
+                        run_result.final_step,
+                        run_result.output_dir,
+                    )
+                    events.emit(
+                        "variant_finished",
+                        status="finished",
+                        name=run.name,
+                        final_step=run_result.final_step,
+                        output_dir=run_result.output_dir,
+                        checkpoint_path=run_result.checkpoint_path,
+                        evaluation_output_dir=(
+                            None
+                            if evaluation_result is None
+                            else evaluation_result.output_dir
+                        ),
+                        duration_seconds=elapsed_seconds(run_start),
+                    )
+                except Exception as exc:
+                    logger.exception("variant failed name=%s", run.name)
+                    results[run.name] = AblationResult(
+                        status="failed",
+                        config_path=run.config_path,
+                        reason=str(exc),
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
+                    events.emit(
+                        "variant_failed",
+                        status="failed",
+                        name=run.name,
+                        config_path=run.config_path,
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        duration_seconds=elapsed_seconds(run_start),
+                    )
+                    if not continue_on_error:
+                        error_to_raise = exc
+                        break
+            _write_ablation_summary(plan, results)
+            logger.info("ablation summary written output_root=%s", output_root)
+            events.emit(
+                "ablation_summary_written",
+                status="written",
+                output_root=output_root,
+                summary_json=output_root / "summary.json",
+                summary_csv=output_root / "summary.csv",
+                variant_count=len(results),
+            )
+            failed_variant_count = sum(
+                1 for result in results.values() if result.status == "failed"
+            )
+            if error_to_raise is None and failed_variant_count == 0:
+                logger.info(
+                    "ablation finished output_root=%s variant_count=%s",
+                    output_root,
+                    len(results),
+                )
+                events.emit(
+                    "ablation_finished",
+                    status="finished",
+                    output_root=output_root,
+                    variant_count=len(results),
+                    duration_seconds=elapsed_seconds(start_time),
+                )
+            else:
+                logger.error(
+                    "ablation failed output_root=%s failed_variant_count=%s",
+                    output_root,
+                    failed_variant_count,
+                )
+                events.emit(
+                    "ablation_failed",
+                    status="failed",
+                    output_root=output_root,
+                    variant_count=len(results),
+                    failed_variant_count=failed_variant_count,
+                    duration_seconds=elapsed_seconds(start_time),
+                    error_type=(
+                        None if error_to_raise is None else type(error_to_raise).__name__
+                    ),
+                    error_message=None if error_to_raise is None else str(error_to_raise),
+                )
+    if error_to_raise is not None:
+        raise error_to_raise
     return results
 
 
@@ -207,6 +379,8 @@ def _write_ablation_summary(
             "status": result.status,
             "config_path": str(result.config_path),
             "reason": result.reason,
+            "error_type": result.error_type,
+            "error_message": result.error_message,
             "output_dir": None,
             "checkpoint_path": None,
             "evaluation_output_dir": None,
@@ -231,6 +405,8 @@ def _write_ablation_summary(
                 "output_dir": row["output_dir"],
                 "checkpoint_path": row["checkpoint_path"],
                 "evaluation_output_dir": row["evaluation_output_dir"],
+                "error_type": result.error_type,
+                "error_message": result.error_message,
                 "arena_size": None,
                 "mean_grid_score_60": None,
                 "mean_scale_meters": None,
@@ -258,6 +434,8 @@ def _write_ablation_summary(
             "output_dir",
             "checkpoint_path",
             "evaluation_output_dir",
+            "error_type",
+            "error_message",
             "arena_size",
             "mean_grid_score_60",
             "mean_scale_meters",

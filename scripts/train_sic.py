@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from sic4gridcells.logging_utils import VALID_LOG_LEVELS, cli_logging_context
 from sic4gridcells.train import train
 
 
@@ -17,12 +18,19 @@ def parse_args() -> argparse.Namespace:
         "--resume",
         help="Path to a checkpoint to resume from. Only train.max_optimizer_steps may differ.",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=VALID_LOG_LEVELS,
+        help="Console log level for stderr logging.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    result = train(args.config, resume_checkpoint=args.resume)
+    with cli_logging_context(args.log_level):
+        result = train(args.config, resume_checkpoint=args.resume)
     print(f"finished step={result.final_step} output_dir={result.output_dir}")
     print(f"checkpoint={result.checkpoint_path}")
 
