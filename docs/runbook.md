@@ -32,10 +32,14 @@ the checkpoint directory contains `latest.pt` and
 `checkpoint_manifest.json`; use these for recovery or ablation resumption.
 Training metrics include `perf/step_seconds`, `perf/points_per_second`,
 `disk/output_free_gb`, and CUDA memory metrics when CUDA is active.
+`scripts/profile_train.py` runs a short pilot through the same training loop and
+writes `profile_summary.json` with observed step timing, checkpoint size, and
+rough full-config runtime/checkpoint-storage estimates.
 
 ## Medium sanity run
 
 ```bash
+CUDA_VISIBLE_DEVICES=0 uv run python scripts/profile_train.py --config configs/medium.yaml --output-dir results/medium-profile --steps 20 --device cuda
 CUDA_VISIBLE_DEVICES=0 uv run python scripts/train_sic.py --config configs/medium.yaml
 uv run python scripts/eval_checkpoint.py --checkpoint results/medium/checkpoints/step_5000.pt --output-dir results/medium/eval --arena-sizes 2.0,3.0,4.0 --nbins 32 --trajectories 32 --steps 256 --seed 0
 uv run python scripts/validate_eval.py --output-dir results/medium/eval --arena-sizes 2.0,3.0,4.0 --json-output results/medium/eval/validation.json --allow-fail
@@ -55,14 +59,15 @@ If `validation.json` contains blockers, treat the medium run as diagnostic only.
 ## Paper-scale run
 
 ```bash
+CUDA_VISIBLE_DEVICES=<id> uv run python scripts/profile_train.py --config configs/sic_paper.yaml --output-dir results/sic_paper-profile --steps 20 --device cuda
 CUDA_VISIBLE_DEVICES=<id> uv run python scripts/train_sic.py --config configs/sic_paper.yaml
 uv run python scripts/eval_checkpoint.py --checkpoint results/sic_paper/checkpoints/step_2000000.pt --output-dir results/sic_paper/eval --arena-sizes 2.0,3.0,4.0 --nbins 32 --trajectories 32 --steps 256 --seed 0
 uv run python scripts/validate_eval.py --output-dir results/sic_paper/eval --arena-sizes 2.0,3.0,4.0 --json-output results/sic_paper/eval/validation.json
 ```
 
-Confirm `metrics.jsonl` contains throughput and CUDA peak-memory fields, and
-record GPU model, CUDA device id, final checkpoint path, and evaluation command
-beside the run output.
+Confirm the profile and training `metrics.jsonl` files contain throughput and
+CUDA peak-memory fields. Record GPU model, CUDA device id, profile summary,
+final checkpoint path, and evaluation command beside the run output.
 
 ## Ablations
 

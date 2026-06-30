@@ -69,6 +69,17 @@ when intentionally rerunning into the same directory. Training metrics include
 step timing, throughput, disk free space, and CUDA memory fields when CUDA is
 active.
 
+Run a short training profile before committing to a longer config:
+
+```bash
+uv run python scripts/profile_train.py --config configs/smoke.yaml --output-dir results/smoke-profile --steps 2 --device cpu
+```
+
+The profile command runs a short pilot through the same training loop and writes
+`profile_summary.json` with observed step time, checkpoint size, and rough
+runtime/checkpoint-storage estimates for the profiled config. Treat it as
+planning evidence, not as completed medium or paper training/evaluation.
+
 Evaluate the smoke checkpoint:
 
 ```bash
@@ -115,6 +126,7 @@ Important training semantics:
 configs/                  YAML training and ablation configs
 docs/                     runbook, reproduction plan, and implementation plan
 scripts/train_sic.py      thin training CLI entry point
+scripts/profile_train.py  short training profile CLI
 scripts/eval_checkpoint.py checkpoint evaluation CLI
 scripts/validate_eval.py evaluation artifact and quality validation CLI
 scripts/run_ablations.py  ablation orchestration CLI
@@ -129,6 +141,7 @@ Key modules:
 - `sic4gridcells.model`: NormReLU and velocity-conditioned RNN.
 - `sic4gridcells.losses`: SIC losses and tiny naive pairwise implementation for tests.
 - `sic4gridcells.train`: training loop, metrics, TensorBoard logging, checkpointing.
+- `sic4gridcells.profiling`: short-run profiling summaries for long-run planning.
 - `sic4gridcells.evaluate`: checkpoint reload, bounded random-walk evaluation, artifact writing.
 - `sic4gridcells.validation`: evaluation artifact completeness and quality-gate reporting.
 - `sic4gridcells.analysis`: ratemap, SAC, grid score, and grid-scale utilities.

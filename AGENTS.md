@@ -25,6 +25,9 @@ Repo-specific instructions for agents working in this repository.
 | Run train smoke test | `uv run python -m pytest tests/test_train_step.py` |
 | Show training CLI help | `uv run python scripts/train_sic.py --help` |
 | Run smoke training | `uv run python scripts/train_sic.py --config configs/smoke.yaml --overwrite-output` |
+| Run profiling tests | `uv run python -m pytest tests/test_profiling.py` |
+| Show profiling CLI help | `uv run python scripts/profile_train.py --help` |
+| Run smoke training profile | `uv run python scripts/profile_train.py --config configs/smoke.yaml --output-dir results/smoke-profile --steps 2 --device cpu --overwrite-output` |
 | Run evaluation tests | `uv run python -m pytest tests/test_analysis.py tests/test_evaluate.py` |
 | Show evaluation CLI help | `uv run python scripts/eval_checkpoint.py --help` |
 | Evaluate smoke checkpoint | `uv run python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16 --overwrite-output` |
@@ -43,6 +46,7 @@ Repo-specific instructions for agents working in this repository.
 - `RNNRollout.hidden_states` has shape `(B, T, N)`.
 - `sic_losses(batch, rollout, cfg)` returns `loss/total`, individual loss terms, and pair/step counts.
 - Checkpoints must remain loadable with default `torch.load(path, map_location="cpu")`; store config data as built-in containers, not custom dataclass objects.
+- `scripts/profile_train.py` runs a short pilot from an existing training config and writes `profile_summary.json`; it does not replace medium or paper training.
 - `scripts/eval_checkpoint.py` reloads the training config from the checkpoint; it does not take a separate `--config`.
 - Evaluation trajectories are bounded random walks and must not reuse supervised place-cell or head-direction targets.
 - `scripts/eval_checkpoint.py --start-mode origin` is the default for no-encoder checkpoints; `--start-mode uniform` requires `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`.

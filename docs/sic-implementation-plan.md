@@ -30,13 +30,16 @@ src/sic4gridcells/data.py
 src/sic4gridcells/model.py
 src/sic4gridcells/losses.py
 src/sic4gridcells/logging_utils.py
+src/sic4gridcells/profiling.py
 src/sic4gridcells/train.py
 scripts/train_sic.py
+scripts/profile_train.py
 tests/test_config.py
 tests/test_data.py
 tests/test_model.py
 tests/test_losses.py
 tests/test_train_step.py
+tests/test_profiling.py
 ```
 
 评估文件：
@@ -192,6 +195,13 @@ docs/runbook.md
 
 `scripts/train_sic.py` 只做 CLI 参数解析并调用 `sic4gridcells.train.train`。
 
+### Training profiling
+
+- `src/sic4gridcells/profiling.py` 复用现有训练循环执行短 pilot，不改变 SIC 数据、模型或 loss 行为。
+- `scripts/profile_train.py` 是薄 CLI；它从现有 training config 读取 paper/medium shape，只覆盖 profile output directory、pilot optimizer steps、可选 device、log/checkpoint cadence。
+- Profile output 仍包含标准训练 artifacts，并额外写 `profile_summary.json`。
+- `profile_summary.json` 输出 observed step timing、final checkpoint size、full-config runtime estimate 和 checkpoint storage estimate；这些是启动长跑前的 planning evidence，不代表完成 medium/paper 训练。
+
 ### Logging
 
 - `scripts/train_sic.py`、`scripts/eval_checkpoint.py` 和 `scripts/run_ablations.py` 都接受 `--log-level`，用于 stderr 端的标准 logging。
@@ -316,6 +326,7 @@ uv run python scripts/validate_eval.py --output-dir results/smoke/eval --arena-s
 验证：
 
 ```bash
+CUDA_VISIBLE_DEVICES=0 uv run python scripts/profile_train.py --config configs/medium.yaml --output-dir results/medium-profile --steps 20 --device cuda
 CUDA_VISIBLE_DEVICES=0 uv run python scripts/train_sic.py --config configs/medium.yaml
 uv run python scripts/eval_checkpoint.py --checkpoint results/medium/checkpoints/step_5000.pt --output-dir results/medium/eval --arena-sizes 2.0,3.0,4.0 --nbins 32 --trajectories 32 --steps 256 --seed 0
 uv run python scripts/validate_eval.py --output-dir results/medium/eval --arena-sizes 2.0,3.0,4.0 --json-output results/medium/eval/validation.json --allow-fail
@@ -339,6 +350,7 @@ uv run python scripts/validate_eval.py --output-dir results/medium/eval --arena-
 验证：
 
 ```bash
+CUDA_VISIBLE_DEVICES=<id> uv run python scripts/profile_train.py --config configs/sic_paper.yaml --output-dir results/sic_paper-profile --steps 20 --device cuda
 CUDA_VISIBLE_DEVICES=<id> uv run python scripts/train_sic.py --config configs/sic_paper.yaml
 uv run python scripts/eval_checkpoint.py --checkpoint results/sic_paper/checkpoints/step_2000000.pt --output-dir results/sic_paper/eval --arena-sizes 2.0,3.0,4.0 --nbins 32 --trajectories 32 --steps 256 --seed 0
 uv run python scripts/validate_eval.py --output-dir results/sic_paper/eval --arena-sizes 2.0,3.0,4.0 --json-output results/sic_paper/eval/validation.json
@@ -376,5 +388,5 @@ uv run python -m pytest
 
 1. 跑中等规模 sanity training，并用 `scripts/eval_checkpoint.py` 评估生成的 checkpoint，再用 `scripts/validate_eval.py` 保存 validation report。
 2. 用 `configs/ablations.yaml` 和 `scripts/run_ablations.py` 执行 matched ablations。
-3. 按 `docs/runbook.md` 记录 paper-scale throughput、GPU memory、checkpoint 和 evaluation cadence。
+3. 按 `docs/runbook.md` 先运行 profile pilot，再记录 paper-scale throughput、GPU memory、checkpoint 和 evaluation cadence。
 4. 基于 paper-scale 结果完成 toroidal manifold confirmation 和论文图级 figure selection。
