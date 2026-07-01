@@ -50,6 +50,7 @@ class TrainConfig:
     scheduler_factor: float = 0.5
     scheduler_patience: int = 1000
     lr: float = 0.00002
+    min_lr: float = 0.0
     weight_decay: float = 0.0
     grad_clip_norm: float = 0.1
     accumulate_grad_batches: int = 2
@@ -102,6 +103,14 @@ def load_config(path: str | Path | None = None) -> Config:
         if not isinstance(overrides, dict):
             raise ValueError(f"Config file must contain a YAML mapping: {path}")
         _deep_update(config_dict, overrides)
+    cfg = _config_from_dict(config_dict)
+    validate_config(cfg)
+    return cfg
+
+
+def load_config_from_dict(data: dict[str, Any]) -> Config:
+    config_dict = asdict(Config())
+    _deep_update(config_dict, data)
     cfg = _config_from_dict(config_dict)
     validate_config(cfg)
     return cfg
@@ -163,8 +172,8 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("loss.chunk_size must be positive")
     if cfg.train.optimizer != "adamw":
         raise ValueError("Only train.optimizer='adamw' is implemented")
-    if cfg.train.scheduler != "reduce_on_plateau":
-        raise ValueError("Only train.scheduler='reduce_on_plateau' is implemented")
+    if cfg.train.scheduler not in {"none", "reduce_on_plateau", "cosine"}:
+        raise ValueError("train.scheduler must be one of: none, reduce_on_plateau, cosine")
     if cfg.train.scheduler_monitor not in VALID_SCHEDULER_MONITORS:
         raise ValueError(
             "train.scheduler_monitor must be one of: "
@@ -176,6 +185,10 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("train.scheduler_patience must be non-negative")
     if cfg.train.lr <= 0:
         raise ValueError("train.lr must be positive")
+    if cfg.train.min_lr < 0:
+        raise ValueError("train.min_lr must be non-negative")
+    if cfg.train.min_lr > cfg.train.lr:
+        raise ValueError("train.min_lr must be less than or equal to train.lr")
     if cfg.train.weight_decay < 0:
         raise ValueError("train.weight_decay must be non-negative")
     if cfg.train.grad_clip_norm <= 0:

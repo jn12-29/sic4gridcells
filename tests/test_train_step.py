@@ -8,7 +8,8 @@ import pytest
 import yaml
 
 import scripts.train_sic as train_cli
-from sic4gridcells.train import train, _write_metrics
+from sic4gridcells.config import Config, TrainConfig
+from sic4gridcells.train import train, _build_scheduler, _step_scheduler, _write_metrics
 from sic4gridcells.runtime import OutputDirectoryConflictError, discover_latest_checkpoint
 
 
@@ -130,6 +131,60 @@ def test_train_logs_on_requested_cadence(tmp_path: Path) -> None:
     event_rows = _load_jsonl(output_dir / "train_events.jsonl")
     assert [row["step"] for row in metric_rows] == [1.0, 2.0, 4.0, 5.0]
     assert [row["step"] for row in event_rows if row["event"] == "train_metrics"] == [1, 2, 4, 5]
+
+
+def test_train_scheduler_none_keeps_lr_constant(tmp_path: Path) -> None:
+    config_path = tmp_path / "constant-lr.yaml"
+    output_dir = tmp_path / "constant-lr-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=3)
+    config["train"]["scheduler"] = "none"
+    config["train"]["lr"] = 0.01
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    result = train(config_path)
+
+    rows = _load_jsonl(output_dir / "metrics.jsonl")
+    assert [row["lr"] for row in rows] == [0.01, 0.01, 0.01]
+    checkpoint = torch.load(result.checkpoint_path, map_location="cpu")
+    assert checkpoint["scheduler_state_dict"] == {}
+
+
+def test_train_scheduler_cosine_decays_to_min_lr(tmp_path: Path) -> None:
+    config_path = tmp_path / "cosine-lr.yaml"
+    output_dir = tmp_path / "cosine-lr-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=4)
+    config["train"]["scheduler"] = "cosine"
+    config["train"]["lr"] = 0.01
+    config["train"]["min_lr"] = 0.001
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    train(config_path)
+
+    rows = _load_jsonl(output_dir / "metrics.jsonl")
+    lrs = [row["lr"] for row in rows]
+    assert lrs[0] < 0.01
+    assert lrs[-1] == pytest.approx(0.001)
+    assert lrs == sorted(lrs, reverse=True)
+
+
+def test_reduce_on_plateau_respects_min_lr() -> None:
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.AdamW([parameter], lr=0.01)
+    cfg = Config(
+        train=TrainConfig(
+            scheduler="reduce_on_plateau",
+            scheduler_factor=0.5,
+            scheduler_patience=0,
+            lr=0.01,
+            min_lr=0.004,
+        )
+    )
+    scheduler = _build_scheduler(optimizer, cfg)
+
+    for _ in range(6):
+        _step_scheduler(scheduler, "reduce_on_plateau", 1.0)
+
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.004)
 
 
 def test_fresh_early_failure_replaces_previous_event_log(
@@ -282,6 +337,29 @@ def test_train_can_resume_from_checkpoint_to_larger_max_step(tmp_path: Path) -> 
     checkpoint = torch.load(resumed_result.checkpoint_path, map_location="cpu")
     assert checkpoint["step"] == 3
     assert "generator_state" in checkpoint
+
+
+def test_cosine_resume_to_larger_max_step_does_not_raise_lr(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "cosine-resume.yaml"
+    output_dir = tmp_path / "cosine-resume-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=2)
+    config["train"]["scheduler"] = "cosine"
+    config["train"]["lr"] = 0.01
+    config["train"]["min_lr"] = 0.001
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    first_result = train(config_path)
+
+    config["train"]["max_optimizer_steps"] = 4
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    train(config_path, resume_checkpoint=first_result.checkpoint_path)
+
+    rows = _load_jsonl(output_dir / "metrics.jsonl")
+    assert rows[1]["lr"] == pytest.approx(0.001)
+    assert rows[2]["lr"] == pytest.approx(0.001)
+    assert rows[3]["lr"] == pytest.approx(0.001)
 
 
 def test_resume_rejects_non_step_config_changes(tmp_path: Path) -> None:

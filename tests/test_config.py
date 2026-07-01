@@ -85,6 +85,38 @@ def test_invalid_scheduler_monitor_fails(tmp_path: Path) -> None:
         load_config(path)
 
 
+def test_scheduler_options_load(tmp_path: Path) -> None:
+    for scheduler in ("none", "reduce_on_plateau", "cosine"):
+        path = tmp_path / f"{scheduler}.yaml"
+        path.write_text(
+            yaml.safe_dump({"train": {"scheduler": scheduler, "min_lr": 0.000001}}),
+            encoding="utf-8",
+        )
+        cfg = load_config(path)
+        assert cfg.train.scheduler == scheduler
+        assert cfg.train.min_lr == 0.000001
+
+
+def test_invalid_scheduler_fails(tmp_path: Path) -> None:
+    path = tmp_path / "bad-scheduler.yaml"
+    path.write_text(
+        yaml.safe_dump({"train": {"scheduler": "linear"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="train.scheduler"):
+        load_config(path)
+
+
+def test_invalid_min_lr_fails(tmp_path: Path) -> None:
+    path = tmp_path / "bad-min-lr.yaml"
+    path.write_text(
+        yaml.safe_dump({"train": {"lr": 0.00002, "min_lr": 0.00003}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="train.min_lr"):
+        load_config(path)
+
+
 def test_save_effective_config_roundtrip(tmp_path: Path) -> None:
     cfg = Config()
     assert cfg.output_dir == "results/smoke"

@@ -14,9 +14,9 @@ from sic4gridcells.analysis import GridScorer
 from sic4gridcells.config import (
     Config,
     load_config,
+    load_config_from_dict,
     resolve_device,
     save_effective_config,
-    validate_config,
 )
 from sic4gridcells.logging_utils import JsonlEventLogger, elapsed_seconds, log_file_context
 from sic4gridcells.model import VelocityConditionedRNN
@@ -1139,23 +1139,6 @@ def _write_csv(path: Path, rows: list[dict[str, object]], fieldnames: list[str])
 
 def _config_from_checkpoint(config_dict: dict) -> Config:
     return load_config_from_dict(config_dict)
-
-
-def load_config_from_dict(config_dict: dict) -> Config:
-    from sic4gridcells.config import DataConfig, LossConfig, ModelConfig, TrainConfig
-
-    cfg = Config(
-        seed=int(config_dict["seed"]),
-        device=str(config_dict["device"]),
-        output_dir=str(config_dict["output_dir"]),
-        data=DataConfig(**config_dict["data"]),
-        model=ModelConfig(**config_dict["model"]),
-        loss=LossConfig(**config_dict["loss"]),
-        train=TrainConfig(**config_dict["train"]),
-        assumptions=[str(item) for item in config_dict.get("assumptions", [])],
-    )
-    validate_config(cfg)
-    return cfg
 
 
 def _format_arena_size(value: float) -> str:

@@ -157,17 +157,24 @@ def train_with_config(
                     lr=cfg.train.lr,
                     weight_decay=cfg.train.weight_decay,
                 )
-                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optimizer,
-                    mode="min",
-                    factor=cfg.train.scheduler_factor,
-                    patience=cfg.train.scheduler_patience,
-                )
+                scheduler = _build_scheduler(optimizer, cfg)
                 generator = torch.Generator(device="cpu").manual_seed(cfg.seed)
                 if checkpoint is not None and resume_path is not None:
                     model.load_state_dict(checkpoint["model_state_dict"])
                     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-                    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                    if scheduler is not None:
+                        if (
+                            cfg.train.scheduler == "cosine"
+                            and _checkpoint_max_optimizer_steps(checkpoint)
+                            != cfg.train.max_optimizer_steps
+                        ):
+                            scheduler = _build_cosine_scheduler_from_current_lr(
+                                optimizer,
+                                cfg,
+                                start_step,
+                            )
+                        else:
+                            scheduler.load_state_dict(checkpoint.get("scheduler_state_dict", {}))
                     if "generator_state" in checkpoint:
                         generator.set_state(checkpoint["generator_state"].cpu())
                     latest_checkpoint = resume_path
@@ -252,7 +259,7 @@ def train_with_config(
                             log_row["perf/points_per_second"] = points_per_step / step_seconds
                             log_row["grad_norm"] = float(grad_norm.detach().cpu())
                             monitor_value = log_row[cfg.train.scheduler_monitor]
-                            scheduler.step(monitor_value)
+                            _step_scheduler(scheduler, cfg.train.scheduler, monitor_value)
                             log_row["lr"] = float(optimizer.param_groups[0]["lr"])
 
                             should_log = (
@@ -452,7 +459,9 @@ def _checkpoint_payload(
     cfg: Config,
     model: VelocityConditionedRNN,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
+    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau
+    | torch.optim.lr_scheduler.CosineAnnealingLR
+    | None,
     generator: torch.Generator,
 ) -> dict[str, object]:
     return {
@@ -460,9 +469,70 @@ def _checkpoint_payload(
         "config": asdict(cfg),
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
+        "scheduler_state_dict": {} if scheduler is None else scheduler.state_dict(),
         "generator_state": generator.get_state(),
     }
+
+
+def _build_scheduler(
+    optimizer: torch.optim.Optimizer,
+    cfg: Config,
+) -> torch.optim.lr_scheduler.ReduceLROnPlateau | torch.optim.lr_scheduler.CosineAnnealingLR | None:
+    if cfg.train.scheduler == "none":
+        return None
+    if cfg.train.scheduler == "reduce_on_plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=cfg.train.scheduler_factor,
+            patience=cfg.train.scheduler_patience,
+            min_lr=cfg.train.min_lr,
+        )
+    if cfg.train.scheduler == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=cfg.train.max_optimizer_steps,
+            eta_min=cfg.train.min_lr,
+        )
+    raise ValueError(f"Unsupported scheduler: {cfg.train.scheduler}")
+
+
+def _build_cosine_scheduler_from_current_lr(
+    optimizer: torch.optim.Optimizer,
+    cfg: Config,
+    start_step: int,
+) -> torch.optim.lr_scheduler.CosineAnnealingLR:
+    for group in optimizer.param_groups:
+        group["initial_lr"] = group["lr"]
+    return torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(cfg.train.max_optimizer_steps - start_step, 1),
+        eta_min=cfg.train.min_lr,
+    )
+
+
+def _step_scheduler(
+    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau
+    | torch.optim.lr_scheduler.CosineAnnealingLR
+    | None,
+    scheduler_name: str,
+    monitor_value: float,
+) -> None:
+    if scheduler is None:
+        return
+    if scheduler_name == "reduce_on_plateau":
+        scheduler.step(monitor_value)
+        return
+    if scheduler_name == "cosine":
+        scheduler.step()
+        return
+    raise ValueError(f"Unsupported scheduler: {scheduler_name}")
+
+
+def _checkpoint_max_optimizer_steps(checkpoint: dict) -> int:
+    config = checkpoint.get("config", {})
+    train_config = config.get("train", {}) if isinstance(config, dict) else {}
+    return int(train_config.get("max_optimizer_steps", 0))
 
 
 def _assert_finite_loss_tensors(losses: dict[str, torch.Tensor], step: int) -> None:
