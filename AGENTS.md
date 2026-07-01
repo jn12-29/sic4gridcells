@@ -35,6 +35,10 @@ Repo-specific instructions for agents working in this repository.
 | Validate smoke evaluation output | `uv run python scripts/validate_eval.py --output-dir results/smoke/eval --arena-sizes 1.0 --min-coverage 0.0 --min-active-units 0 --min-module-count 0` |
 | Show ablation CLI help | `uv run python scripts/run_ablations.py --help` |
 | Dry-run ablations | `uv run python scripts/run_ablations.py --config configs/ablations.yaml --dry-run --overwrite-output` |
+| Run paper-suite tests | `uv run python -m pytest tests/test_analysis_ext.py tests/test_paper_figures.py tests/test_paper_suite.py` |
+| Show paper-suite CLI help | `uv run python scripts/run_paper_suite.py --help` |
+| Dry-run paper suite | `uv run python scripts/run_paper_suite.py --config configs/paper_suite_smoke.yaml --dry-run --overwrite-output` |
+| Show figure-builder CLI help | `uv run python scripts/build_paper_figures.py --help` |
 
 ## Current Contracts
 
@@ -53,6 +57,8 @@ Repo-specific instructions for agents working in this repository.
 - Ratemap empty bins remain `NaN`; visited zero responses remain `0.0`. Evaluation writes `occupancy.npz` for coverage and reports `units_without_coverage`, `zero_response_units`, `invalid_response_units`, and `active_units` instead of using `dead_units` as a coverage proxy.
 - SAC/grid scoring must use finite ratemap bins as its overlap mask; evaluation walk step scale must not shrink as `--steps` increases.
 - `scripts/validate_eval.py` reads an existing evaluation output directory, reports artifact and quality blockers, and exits nonzero on blockers unless `--allow-fail` is passed.
+- `scripts/build_paper_figures.py` reads existing suite/evaluation/analysis artifacts only; it must not train or evaluate.
+- Paper-suite JSON outputs must be strict JSON with no `NaN` constants; missing artifacts or validation blockers prevent paper-claim figures unless the run is marked `diagnostic_only`.
 - Evaluation artifacts live under caller-selected `results/` output directories.
 
 ## File Ownership
@@ -61,6 +67,8 @@ Repo-specific instructions for agents working in this repository.
 - `configs/medium.yaml` is the medium sanity-run config.
 - `configs/sic_paper.yaml` is the paper-scale config and should keep paper values unless the implementation plan changes.
 - `configs/ablations.yaml` is the ablation orchestration plan; `no_permutation_augmentation` uses `data.augmentation_mode: identity`.
+- `configs/paper_suite_smoke.yaml` is the smoke paper-suite orchestration plan.
+- `configs/paper_suite.yaml` is the paper-scale paper-suite orchestration plan.
 - `docs/sic-implementation-plan.md` owns implementation contracts and phase boundaries.
 - `docs/sic-reproduction-plan.md` owns paper-material rationale and reproduction scope.
 - `docs/runbook.md` owns medium, paper-scale, and ablation run commands plus artifact checklists.

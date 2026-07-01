@@ -2,7 +2,7 @@
 
 Plain PyTorch reproduction scaffold for the SIC grid-cell model from Schaeffer et al., "Self-Supervised Learning of Representations for Space Generates Multi-Modular Grid Cells".
 
-The current repository implements a runnable SIC reproduction slice: SIC velocity permutation batches, velocity-conditioned RNN rollout, separation/invariance/capacity/conformal-isometry losses, training, checkpoint evaluation, evaluation validation, ratemaps, SAC/grid scoring, smoke/medium/paper configs, ablation orchestration, and unit tests. See `docs/runbook.md` for longer run commands, and `docs/sic-implementation-plan.md` plus `docs/sic-reproduction-plan.md` for reproduction scope and remaining paper-level work.
+The current repository implements a runnable SIC reproduction slice: SIC velocity permutation batches, velocity-conditioned RNN rollout, separation/invariance/capacity/conformal-isometry losses, training, checkpoint evaluation, evaluation validation, ratemaps, SAC/grid scoring, smoke/medium/paper configs, ablation orchestration, paper-suite analysis/figure generation, and unit tests. See `docs/runbook.md` for longer run commands, and `docs/sic-implementation-plan.md` plus `docs/sic-reproduction-plan.md` for reproduction scope and remaining paper-level work.
 
 ## Setup
 
@@ -104,14 +104,31 @@ uv run python scripts/validate_eval.py --output-dir results/smoke/eval --arena-s
 
 The validation CLI checks required artifacts plus coverage, active-unit, invalid-response, and module evidence thresholds. Default thresholds are conservative and are intended for claim gates; validation blockers mean the evaluation output is incomplete or insufficient evidence, not that training or evaluation crashed.
 
+Dry-run the paper-suite orchestrator without launching training:
+
+```bash
+uv run python scripts/run_paper_suite.py --config configs/paper_suite_smoke.yaml --dry-run --overwrite-output
+```
+
+Build paper-result figures from an existing suite directory:
+
+```bash
+uv run python scripts/build_paper_figures.py --suite-dir results/paper_suite/smoke --output-dir results/paper_suite/smoke/figures
+```
+
+The figure builder only reads existing suite, evaluation, and analysis artifacts. It writes stable `fig_*.png`, `fig_*.pdf`, `summary_tables/`, and `figure_manifest.json` outputs.
+
 ## Configs
 
 - `configs/smoke.yaml`: small CPU smoke run for tests and workflow checks.
 - `configs/medium.yaml`: medium sanity-run profile (`B=16`, `T=30`, `N=64`).
 - `configs/sic_paper.yaml`: paper-scale training hyperparameters from the reproduction plan.
 - `configs/ablations.yaml`: ablation orchestration plan for `scripts/run_ablations.py`.
+- `configs/paper_suite_smoke.yaml`: smoke paper-suite orchestration plan for dry-runs and local workflow checks.
+- `configs/paper_suite.yaml`: paper-suite orchestration plan for paper-scale baseline seeds.
 - `scripts/run_ablations.py` accepts `--log-level`; the ablation root writes `run.log` and `ablation_events.jsonl`.
 - `scripts/run_ablations.py` accepts `--resume-existing` to resume variants from their latest checkpoints, `--skip-completed` to skip variants that already reached `train.max_optimizer_steps`, and `--overwrite-output` for intentional fresh reruns into existing directories.
+- `scripts/run_paper_suite.py` accepts `--dry-run`, `--resume-existing`, `--skip-completed`, `--overwrite-output`, and `--log-level`; suite outputs live under `results/paper_suite/<run_id>/`.
 
 Important training semantics:
 
@@ -130,6 +147,8 @@ scripts/profile_train.py  short training profile CLI
 scripts/eval_checkpoint.py checkpoint evaluation CLI
 scripts/validate_eval.py evaluation artifact and quality validation CLI
 scripts/run_ablations.py  ablation orchestration CLI
+scripts/run_paper_suite.py paper-suite orchestration CLI
+scripts/build_paper_figures.py paper-result figure builder CLI
 src/sic4gridcells/        package source
 tests/                    pytest suite
 ```
@@ -145,15 +164,19 @@ Key modules:
 - `sic4gridcells.evaluate`: checkpoint reload, bounded random-walk evaluation, artifact writing.
 - `sic4gridcells.validation`: evaluation artifact completeness and quality-gate reporting.
 - `sic4gridcells.analysis`: ratemap, SAC, grid score, and grid-scale utilities.
+- `sic4gridcells.analysis_ext`: paper-suite analysis tables for modules, cross-arena stability, path invariance, Fourier/phase, and state-space summaries.
+- `sic4gridcells.figure_data`: figure-ready table discovery and manifest dependency loading.
+- `sic4gridcells.paper_figures`: paper-result PNG/PDF rendering from existing artifacts.
+- `sic4gridcells.paper_suite`: suite manifest, dry-run, and orchestration helpers.
 - `sic4gridcells.plotting`: PDF and PNG evaluation figures.
 - `sic4gridcells.runtime`: output safety, atomic checkpoint writes, latest-checkpoint discovery, and runtime diagnostics.
 - `docs/runbook.md`: medium, paper-scale, and ablation command sequence.
 
 ## Current Limits
 
-This is not yet a full paper reproduction. The current code verifies the core training and evaluation contracts, but these paper-level pieces still require longer runs and analysis:
+This is not yet a completed paper reproduction result. The current code verifies the core training, evaluation, validation, analysis, and figure-generation contracts, but these paper-level pieces still require completed long runs and review:
 
 - medium-scale training has a config but has not been run to completion here
 - paper-scale training and multi-seed sweeps
-- full paper figure reproduction from trained results
-- toroidal manifold confirmation beyond the preliminary state-space PCA summaries
+- paper-claim figures built from trained, validation-passing results
+- toroidal manifold confirmation beyond the state-space summary artifacts

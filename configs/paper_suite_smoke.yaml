@@ -1,0 +1,49 @@
+output_root: results/paper_suite
+run_id: smoke
+config_dir: results/paper_suite/smoke/configs
+continue_on_error: false
+
+runs:
+  - name: baseline_seed0
+    variant: baseline
+    seed: 0
+    config: configs/smoke.yaml
+    diagnostic_only: false
+
+profile:
+  enabled: false
+
+evaluation:
+  enabled: true
+  output_dir_name: eval
+  device: cpu
+  arena_sizes: [1.0]
+  nbins: 8
+  trajectories: 2
+  steps: 16
+  start_mode: origin
+  trajectory_mode: reflect
+
+validation:
+  enabled: true
+  output_name: validation_report.json
+  arena_sizes: [1.0]
+  min_coverage: 0.0
+  min_active_units: 0
+  max_invalid_response_units: 0
+  min_module_count: 0
+  min_module_units: 0
+  min_module_grid_score_60: 0.0
+
+analysis:
+  enabled: true
+  output_dir_name: analysis
+  min_grid_score_60: 0.0
+  min_module_units: 3
+  max_scale_ratio_within_module: 1.2
+  max_path_pairs: 2000
+  max_state_space_samples: 256
+
+figures:
+  enabled: true
+  output_dir: figures

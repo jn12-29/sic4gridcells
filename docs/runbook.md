@@ -9,6 +9,7 @@ uv run python -m pytest
 uv run python scripts/train_sic.py --config configs/smoke.yaml
 uv run python scripts/eval_checkpoint.py --checkpoint results/smoke/checkpoints/step_10.pt --output-dir results/smoke/eval --device cpu --arena-sizes 1.0 --nbins 8 --trajectories 2 --steps 16 --seed 0
 uv run python scripts/validate_eval.py --output-dir results/smoke/eval --arena-sizes 1.0 --min-coverage 0.0 --min-active-units 0 --min-module-count 0
+uv run python scripts/run_paper_suite.py --config configs/paper_suite_smoke.yaml --dry-run --overwrite-output
 ```
 
 Fresh train, evaluation, and ablation runs refuse to reuse non-empty output
@@ -92,11 +93,32 @@ available.
 Ablation validation commands use `--allow-fail` to keep collecting all variant
 reports; variants with blockers are diagnostic only.
 
+## Paper suite and figures
+
+```bash
+uv run python scripts/run_paper_suite.py --config configs/paper_suite_smoke.yaml --dry-run --overwrite-output
+CUDA_VISIBLE_DEVICES=<id> uv run python scripts/run_paper_suite.py --config configs/paper_suite.yaml --resume-existing --skip-completed
+uv run python scripts/build_paper_figures.py --suite-dir results/paper_suite/paper --output-dir results/paper_suite/paper/figures
+```
+
+The suite runner writes `manifest.json`, `summary.json`, `summary.csv`,
+`run.log`, `paper_suite_events.jsonl`, per-run materialized configs, and
+per-run outputs under `results/paper_suite/<run_id>/`. Dry-run mode writes and
+validates configs plus manifests without launching profile, training,
+evaluation, validation, analysis, or figure generation.
+
+Analysis outputs live under each run's `analysis/summary_tables/` directory and
+include module, cross-arena, path-invariance, Fourier/phase, and state-space
+tables. `scripts/build_paper_figures.py` reads existing suite artifacts only and
+writes `fig_grid_modules`, `fig_arena_generalization`,
+`fig_path_invariance`, `fig_fourier_phase_state`, `fig_ablations`, copied
+`summary_tables/`, and `figure_manifest.json`.
+
 ## Paper-claim checklist
 
-- Multiple modules: inspect `module_summary.csv`, `scale_meters_histogram.png`, and per-unit `module_id` in `grid_stats.csv`.
-- Generalization: compare `mean_scale_meters`, grid scores, and ratemaps across 2 m, 3 m, and 4 m arenas.
-- Path invariance: inspect `pairwise_distance_stats.csv` and `pairwise_distance.png` for near-zero spatial distance and temporal separation bins.
-- Fourier/phase/state-space: inspect `fourier_stats.csv`, `phase_summary.csv`, `state_space_summary.csv`, and `state_space_modules.npz`.
-- Validation gate: inspect each `validation.json`; do not make paper-level claims while blockers remain.
+- Multiple modules: inspect `analysis/summary_tables/module_summary.csv`, `scale_meters_histogram.png`, and per-unit `module_id` in `grid_stats.csv`.
+- Generalization: inspect `analysis/summary_tables/cross_arena_unit_metrics.csv`, `analysis/summary_tables/cross_arena_module_stability.csv`, and compare ratemaps across 2 m, 3 m, and 4 m arenas.
+- Path invariance: inspect `analysis/summary_tables/path_invariance_summary.csv`, `analysis/summary_tables/path_invariance_bins.csv`, and `pairwise_distance.png`.
+- Fourier/phase/state-space: inspect `analysis/summary_tables/fourier_lattice_vectors.csv`, `analysis/summary_tables/phase_tiling.csv`, `analysis/summary_tables/state_space_summary.csv`, and per-arena `state_space_ext.npz`.
+- Validation gate: inspect each validation report JSON; do not make paper-level claims while blockers remain.
 - Ablations: compare `results/ablations/summary.csv` across baseline, no capacity, reduced `sigma_g`, no separation, no invariance, no conformal isometry, and no permutation augmentation.

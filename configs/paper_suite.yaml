@@ -1,0 +1,57 @@
+output_root: results/paper_suite
+run_id: paper
+config_dir: results/paper_suite/paper/configs
+continue_on_error: false
+
+runs:
+  - name: baseline_seed0
+    variant: baseline
+    seed: 0
+    config: configs/sic_paper.yaml
+    diagnostic_only: false
+  - name: baseline_seed1
+    variant: baseline
+    seed: 1
+    config: configs/sic_paper.yaml
+    diagnostic_only: false
+
+profile:
+  enabled: true
+  output_dir_name: profile
+  steps: 20
+  device: auto
+
+evaluation:
+  enabled: true
+  output_dir_name: eval
+  device: auto
+  arena_sizes: [2.0, 3.0, 4.0]
+  nbins: 32
+  trajectories: 32
+  steps: 256
+  start_mode: origin
+  trajectory_mode: smooth_avoid_walls
+
+validation:
+  enabled: true
+  output_name: validation_report.json
+  arena_sizes: [2.0, 3.0, 4.0]
+  min_coverage: 0.8
+  min_active_units: 1
+  max_invalid_response_units: 0
+  min_module_count: 1
+  min_module_units: 3
+  min_module_grid_score_60: 0.0
+
+analysis:
+  enabled: true
+  output_dir_name: analysis
+  min_grid_score_60: 0.0
+  min_module_units: 3
+  max_scale_ratio_within_module: 1.2
+  max_path_pairs: 20000
+  max_state_space_samples: 512
+
+figures:
+  enabled: true
+  output_dir: figures
