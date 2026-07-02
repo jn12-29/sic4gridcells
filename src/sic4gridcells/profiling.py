@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from sic4gridcells.config import Config, load_config, validate_config
+from sic4gridcells.config import Config, load_config, load_config_from_dict
 from sic4gridcells.logging_utils import to_jsonable
 from sic4gridcells.train import train_with_config
 
@@ -146,18 +146,7 @@ def _pilot_config(
     data["train"]["max_optimizer_steps"] = steps
     data["train"]["checkpoint_every"] = steps
     data["train"]["log_every"] = 1
-    pilot_cfg = Config(
-        seed=int(data["seed"]),
-        device=str(data["device"]),
-        output_dir=str(data["output_dir"]),
-        data=type(cfg.data)(**data["data"]),
-        model=type(cfg.model)(**data["model"]),
-        loss=type(cfg.loss)(**data["loss"]),
-        train=type(cfg.train)(**data["train"]),
-        assumptions=[str(item) for item in data.get("assumptions", [])],
-    )
-    validate_config(pilot_cfg)
-    return pilot_cfg
+    return load_config_from_dict(data)
 
 
 def _load_metrics_rows(path: Path) -> list[dict[str, float]]:

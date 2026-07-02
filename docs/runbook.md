@@ -26,8 +26,9 @@ Unvisited ratemap bins are stored as `NaN`; coverage is determined from `occupan
 
 Evaluation defaults to `--start-mode origin`, which keeps reset model state aligned with position bins. `--start-mode uniform` is only valid for checkpoints trained with `model.initial_position_encoding: additive_mlp` and `data.initial_position_mode: uniform_box`. If `--seed` is omitted, evaluation uses the checkpoint config seed.
 Evaluation defaults to `--trajectory-mode reflect`, the original bounded random-walk sampler. Use `--trajectory-mode smooth_avoid_walls` for smoother wall-avoiding diagnostic trajectories closer to the paper's evaluation description.
-The training, evaluation, and ablation CLIs also accept `--log-level` for stderr logging; stdout still prints the final completion lines used by the smoke commands above.
-Each workflow writes a human-readable `run.log` plus a strict JSONL event file: `train_events.jsonl`, `eval_events.jsonl`, or `ablation_events.jsonl` at the corresponding output root.
+The training, evaluation, ablation, and paper-suite CLIs also accept `--log-level` for stderr logging; stdout still prints the final completion lines used by the smoke commands above.
+Each workflow writes a human-readable `run.log` plus a strict JSONL event file: `train_events.jsonl`, `eval_events.jsonl`, `ablation_events.jsonl`, or `paper_suite_events.jsonl` at the corresponding output root.
+Structured file/event detail is controlled by `logging.detail_level` in the training config. The default `detailed` adds bounded stage diagnostics; `standard` keeps coarse lifecycle events and the same filenames.
 Training checkpoints are written atomically. In addition to `step_<step>.pt`,
 the checkpoint directory contains `latest.pt` and
 `checkpoint_manifest.json`; use these for recovery or ablation resumption.
@@ -48,7 +49,7 @@ uv run python scripts/validate_eval.py --output-dir results/medium/eval --arena-
 
 If training is interrupted, resume from the latest checkpoint with the same
 config. To extend beyond the checkpoint config, change only
-`train.max_optimizer_steps`.
+`train.max_optimizer_steps` or `logging.detail_level`.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 uv run python scripts/train_sic.py --config configs/medium.yaml --resume results/medium/checkpoints/step_500.pt

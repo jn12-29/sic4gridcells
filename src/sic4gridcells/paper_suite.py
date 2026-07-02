@@ -95,6 +95,7 @@ def run_paper_suite(
     git_commit = _git_commit()
     start_time = time.perf_counter()
     error_to_raise: Exception | None = None
+    detailed_run_names: set[str] = set()
 
     with log_file_context(suite_dir / "run.log", logger_names=("sic4gridcells",), mode="w"):
         with JsonlEventLogger(suite_dir / "paper_suite_events.jsonl", mode="w") as events:
@@ -129,6 +130,9 @@ def run_paper_suite(
                 run_start = time.perf_counter()
                 try:
                     cfg = load_config(suite_run.config_path)
+                    detailed_logging = cfg.logging.detail_level == "detailed"
+                    if detailed_logging:
+                        detailed_run_names.add(suite_run.name)
                     if dry_run:
                         results[suite_run.name] = PaperSuiteResult(
                             status="validated",
@@ -156,12 +160,32 @@ def run_paper_suite(
                             latest=latest,
                         )
                         continue
+                    profile_start = None
+                    if detailed_logging and _section_enabled(plan, "profile"):
+                        profile_start = _emit_stage_start(
+                            events,
+                            suite_run.name,
+                            "profile",
+                            config_path=suite_run.config_path,
+                        )
                     profile_summary = _maybe_profile_run(
                         plan,
                         suite_run,
                         suite_dir=suite_dir,
                         overwrite_output=overwrite_output,
                     )
+                    if detailed_logging and profile_start is not None:
+                        _emit_stage_finished(
+                            events,
+                            suite_run.name,
+                            "profile",
+                            profile_start,
+                            output_dir=(
+                                None
+                                if profile_summary is None
+                                else profile_summary.output_dir
+                            ),
+                        )
                     resume_checkpoint = None
                     if resume_existing:
                         latest = discover_latest_checkpoint(cfg.output_dir)
@@ -172,26 +196,102 @@ def run_paper_suite(
                         train_kwargs["resume_checkpoint"] = resume_checkpoint
                     if overwrite_output and resume_checkpoint is None:
                         train_kwargs["overwrite_output"] = True
+                    train_start = None
+                    if detailed_logging:
+                        train_start = _emit_stage_start(
+                            events,
+                            suite_run.name,
+                            "train",
+                            config_path=suite_run.config_path,
+                            resume_checkpoint=resume_checkpoint,
+                        )
                     run_result = train(suite_run.config_path, **train_kwargs)
+                    if detailed_logging and train_start is not None:
+                        _emit_stage_finished(
+                            events,
+                            suite_run.name,
+                            "train",
+                            train_start,
+                            output_dir=run_result.output_dir,
+                            checkpoint_path=run_result.checkpoint_path,
+                            final_step=run_result.final_step,
+                        )
+                    eval_start = None
+                    if detailed_logging and _section_enabled(plan, "evaluation"):
+                        eval_start = _emit_stage_start(
+                            events,
+                            suite_run.name,
+                            "eval",
+                            checkpoint_path=run_result.checkpoint_path,
+                        )
                     evaluation_result = _maybe_evaluate_run(
                         plan,
                         suite_run,
                         run_result,
                         overwrite_output=overwrite_output,
                     )
+                    if detailed_logging and eval_start is not None:
+                        _emit_stage_finished(
+                            events,
+                            suite_run.name,
+                            "eval",
+                            eval_start,
+                            output_dir=(
+                                None
+                                if evaluation_result is None
+                                else evaluation_result.output_dir
+                            ),
+                        )
                     validation_report_path = None
                     validation_passed = None
                     if evaluation_result is not None:
+                        validation_start = None
+                        if detailed_logging and _section_enabled(plan, "validation"):
+                            validation_start = _emit_stage_start(
+                                events,
+                                suite_run.name,
+                                "validation",
+                                evaluation_output_dir=evaluation_result.output_dir,
+                            )
                         validation_report_path, validation_passed = _maybe_validate_run(
                             plan,
                             suite_run,
                             evaluation_result,
+                        )
+                        if detailed_logging and validation_start is not None:
+                            _emit_stage_finished(
+                                events,
+                                suite_run.name,
+                                "validation",
+                                validation_start,
+                                report_path=validation_report_path,
+                                validation_passed=validation_passed,
+                            )
+                    analysis_start = None
+                    if (
+                        detailed_logging
+                        and evaluation_result is not None
+                        and _section_enabled(plan, "analysis")
+                    ):
+                        analysis_start = _emit_stage_start(
+                            events,
+                            suite_run.name,
+                            "analysis",
+                            evaluation_output_dir=evaluation_result.output_dir,
                         )
                     analysis_output_dir = _maybe_analyze_run(
                         plan,
                         suite_run,
                         evaluation_result,
                     )
+                    if detailed_logging and analysis_start is not None:
+                        _emit_stage_finished(
+                            events,
+                            suite_run.name,
+                            "analysis",
+                            analysis_start,
+                            output_dir=analysis_output_dir,
+                        )
                     results[suite_run.name] = PaperSuiteResult(
                         status="finished",
                         config_path=suite_run.config_path,
@@ -250,7 +350,24 @@ def run_paper_suite(
             )
             suite_figure_output_dir = None
             if not dry_run and error_to_raise is None and _can_build_suite_figures(results):
+                figure_start = None
+                if detailed_run_names and _section_enabled(plan, "figures"):
+                    figure_start = _emit_stage_start(
+                        events,
+                        None,
+                        "figure",
+                        suite_dir=suite_dir,
+                        run_names=sorted(detailed_run_names),
+                    )
                 suite_figure_output_dir = _maybe_build_figures(plan, suite_dir=suite_dir)
+                if figure_start is not None:
+                    _emit_stage_finished(
+                        events,
+                        None,
+                        "figure",
+                        figure_start,
+                        output_dir=suite_figure_output_dir,
+                    )
                 if suite_figure_output_dir is not None:
                     _write_suite_outputs(
                         plan,
@@ -336,6 +453,45 @@ def materialize_paper_suite_configs(plan: dict[str, Any]) -> list[PaperSuiteRun]
             )
         )
     return runs
+
+
+def _section_enabled(plan: dict[str, Any], name: str) -> bool:
+    section = plan.get(name, {})
+    return isinstance(section, dict) and bool(section.get("enabled", False))
+
+
+def _emit_stage_start(
+    events: JsonlEventLogger,
+    run_name: str | None,
+    stage: str,
+    **fields: Any,
+) -> float:
+    start_time = time.perf_counter()
+    events.emit(
+        "paper_suite_stage_start",
+        status="started",
+        name=run_name,
+        stage=stage,
+        **fields,
+    )
+    return start_time
+
+
+def _emit_stage_finished(
+    events: JsonlEventLogger,
+    run_name: str | None,
+    stage: str,
+    start_time: float,
+    **fields: Any,
+) -> None:
+    events.emit(
+        "paper_suite_stage_finished",
+        status="finished",
+        name=run_name,
+        stage=stage,
+        duration_seconds=elapsed_seconds(start_time),
+        **fields,
+    )
 
 
 def _maybe_profile_run(

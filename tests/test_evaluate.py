@@ -9,7 +9,14 @@ import numpy as np
 import pytest
 import torch
 
-from sic4gridcells.config import Config, DataConfig, LossConfig, ModelConfig, TrainConfig
+from sic4gridcells.config import (
+    Config,
+    DataConfig,
+    LoggingConfig,
+    LossConfig,
+    ModelConfig,
+    TrainConfig,
+)
 from sic4gridcells.evaluate import (
     evaluate_checkpoint,
     _accumulate_ratemaps,
@@ -139,8 +146,101 @@ def test_evaluate_checkpoint_writes_artifacts(tmp_path: Path) -> None:
     assert "state_space_modules" in arena_summary
     assert "near_spatial_pair_count" in arena_summary
     events = _load_jsonl(result.output_dir / "eval_events.jsonl")
-    assert {"eval_start", "eval_config_loaded", "eval_arena_start", "eval_arena_finished", "eval_summary_written", "eval_finished"} <= {row["event"] for row in events}
+    assert {
+        "eval_start",
+        "eval_checkpoint_loaded",
+        "eval_model_loaded",
+        "eval_config_loaded",
+        "eval_arena_start",
+        "eval_arena_rollout_finished",
+        "eval_arena_artifacts_written",
+        "eval_arena_finished",
+        "eval_summary_written",
+        "eval_finished",
+    } <= {row["event"] for row in events}
     assert all("timestamp" in row for row in events)
+    artifact_event = next(row for row in events if row["event"] == "eval_arena_artifacts_written")
+    assert "artifact_paths" in artifact_event
+    assert "positions" not in artifact_event
+    assert "hidden_states" not in artifact_event
+
+
+def test_evaluate_standard_logging_suppresses_detailed_events(tmp_path: Path) -> None:
+    checkpoint_path = _write_checkpoint(
+        tmp_path,
+        ModelConfig(n_units=4, mlp_layers=1, mlp_hidden_width=8),
+        logging_detail_level="standard",
+    )
+
+    result = evaluate_checkpoint(
+        checkpoint_path,
+        tmp_path / "eval-standard",
+        device="cpu",
+        arena_sizes=(1.0,),
+        nbins=4,
+        n_trajectories=1,
+        steps_per_trajectory=4,
+    )
+
+    events = _load_jsonl(result.output_dir / "eval_events.jsonl")
+    event_names = {row["event"] for row in events}
+    assert "eval_config_loaded" in event_names
+    assert "eval_checkpoint_loaded" not in event_names
+    assert "eval_model_loaded" not in event_names
+    assert "eval_arena_rollout_finished" not in event_names
+    assert "eval_arena_artifacts_written" not in event_names
+
+
+def test_eval_artifact_event_uses_bounded_known_artifact_paths(tmp_path: Path) -> None:
+    checkpoint_path = _write_checkpoint(
+        tmp_path,
+        ModelConfig(n_units=4, mlp_layers=1, mlp_hidden_width=8),
+    )
+    output_dir = tmp_path / "eval-stale"
+    stale_arena_dir = output_dir / "arena_1p0"
+    stale_arena_dir.mkdir(parents=True)
+    (stale_arena_dir / "stale.txt").write_text("old", encoding="utf-8")
+
+    result = evaluate_checkpoint(
+        checkpoint_path,
+        output_dir,
+        device="cpu",
+        arena_sizes=(1.0,),
+        nbins=4,
+        n_trajectories=1,
+        steps_per_trajectory=4,
+        overwrite_output=True,
+    )
+
+    events = _load_jsonl(result.output_dir / "eval_events.jsonl")
+    artifact_event = next(row for row in events if row["event"] == "eval_arena_artifacts_written")
+    assert all(not path.endswith("stale.txt") for path in artifact_event["artifact_paths"])
+    assert len(artifact_event["artifact_paths"]) <= 25
+
+
+def test_evaluate_old_checkpoint_missing_logging_defaults_to_detailed(tmp_path: Path) -> None:
+    checkpoint_path = _write_checkpoint(
+        tmp_path,
+        ModelConfig(n_units=4, mlp_layers=1, mlp_hidden_width=8),
+    )
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    del checkpoint["config"]["logging"]
+    torch.save(checkpoint, checkpoint_path)
+
+    result = evaluate_checkpoint(
+        checkpoint_path,
+        tmp_path / "eval-old",
+        device="cpu",
+        arena_sizes=(1.0,),
+        nbins=4,
+        n_trajectories=1,
+        steps_per_trajectory=4,
+    )
+
+    events = _load_jsonl(result.output_dir / "eval_events.jsonl")
+    assert "eval_checkpoint_loaded" in {row["event"] for row in events}
+    effective_config = _load_strict_json(result.output_dir / "summary.json")["config"]
+    assert effective_config["logging"]["detail_level"] == "detailed"
 
 
 def test_evaluate_checkpoint_refuses_existing_output_without_overwrite(tmp_path: Path) -> None:
@@ -699,7 +799,19 @@ def _load_strict_json(path: Path):
 
 
 def _load_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    raw = path.read_text(encoding="utf-8")
+    assert "NaN" not in raw
+    assert "Infinity" not in raw
+    return [
+        json.loads(
+            line,
+            parse_constant=lambda value: pytest.fail(
+                f"non-standard JSON constant {value!r} in {path}"
+            ),
+        )
+        for line in raw.splitlines()
+        if line.strip()
+    ]
 
 
 class _CapturingModel:
@@ -732,6 +844,7 @@ def _write_checkpoint(
     model_cfg: ModelConfig,
     data_cfg: DataConfig | None = None,
     device: str = "cpu",
+    logging_detail_level: str = "detailed",
 ) -> Path:
     cfg = Config(
         seed=0,
@@ -742,6 +855,7 @@ def _write_checkpoint(
         model=model_cfg,
         loss=LossConfig(chunk_size=1, pairwise_reduction="mean"),
         train=TrainConfig(max_optimizer_steps=1),
+        logging=LoggingConfig(detail_level=logging_detail_level),
     )
     model = VelocityConditionedRNN(cfg)
     checkpoint_path = tmp_path / f"{model_cfg.initial_position_encoding}.pt"

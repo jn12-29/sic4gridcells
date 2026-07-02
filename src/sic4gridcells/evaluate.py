@@ -93,12 +93,34 @@ def evaluate_checkpoint(
                     requested_seed=seed,
                     overwrite_output=overwrite_output,
                 )
+                checkpoint_load_start = time.perf_counter()
                 checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                checkpoint_load_seconds = elapsed_seconds(checkpoint_load_start)
                 cfg = _config_from_checkpoint(checkpoint["config"])
+                detailed_logging = cfg.logging.detail_level == "detailed"
+                if detailed_logging:
+                    events.emit(
+                        "eval_checkpoint_loaded",
+                        status="loaded",
+                        checkpoint_path=checkpoint_path,
+                        checkpoint_step=checkpoint.get("step"),
+                        checkpoint_load_seconds=checkpoint_load_seconds,
+                        logging_detail_level=cfg.logging.detail_level,
+                    )
                 device_t = resolve_device(device)
+                model_load_start = time.perf_counter()
                 model = VelocityConditionedRNN(cfg).to(device_t)
                 model.load_state_dict(checkpoint["model_state_dict"])
                 model.eval()
+                if detailed_logging:
+                    events.emit(
+                        "eval_model_loaded",
+                        status="loaded",
+                        device=str(device_t),
+                        n_units=cfg.model.n_units,
+                        parameter_count=sum(parameter.numel() for parameter in model.parameters()),
+                        model_load_seconds=elapsed_seconds(model_load_start),
+                    )
                 if start_mode not in {"origin", "uniform"}:
                     raise ValueError("start_mode must be 'origin' or 'uniform'")
                 if trajectory_mode not in VALID_TRAJECTORY_MODES:
@@ -158,6 +180,7 @@ def evaluate_checkpoint(
                             arena_dir=arena_dir,
                             arena_index=arena_index,
                         )
+                        rollout_start = time.perf_counter()
                         positions, hidden_states, velocities = _run_bounded_random_walks(
                             model,
                             device_t,
@@ -168,6 +191,20 @@ def evaluate_checkpoint(
                             trajectory_mode=trajectory_mode,
                             generator=generator,
                         )
+                        if detailed_logging:
+                            events.emit(
+                                "eval_arena_rollout_finished",
+                                status="finished",
+                                arena_size=arena_size,
+                                arena_dir=arena_dir,
+                                arena_index=arena_index,
+                                duration_seconds=elapsed_seconds(rollout_start),
+                                positions_shape=list(positions.shape),
+                                hidden_states_shape=list(hidden_states.shape),
+                                velocities_shape=list(velocities.shape),
+                                trajectories=n_trajectories,
+                                steps=steps_per_trajectory,
+                            )
                         scorer = GridScorer(
                             nbins=nbins,
                             coords_range=[
@@ -231,6 +268,7 @@ def evaluate_checkpoint(
                             hidden_states,
                             module_ids,
                         )
+                        artifact_start = time.perf_counter()
                         _write_arena_artifacts(
                             arena_dir,
                             positions=positions,
@@ -257,6 +295,7 @@ def evaluate_checkpoint(
                             mask_90=scores.mask_90,
                             unit_response_stats=unit_response_stats,
                         )
+                        artifact_seconds = elapsed_seconds(artifact_start)
                         arena_summary = {
                             "arena_size": arena_size,
                             "mean_grid_score_60": _json_float(np.nanmean(scores.score_60)),
@@ -289,6 +328,23 @@ def evaluate_checkpoint(
                             **coverage_summary,
                             **_unit_response_counts(unit_response_stats),
                         }
+                        if detailed_logging:
+                            events.emit(
+                                "eval_arena_artifacts_written",
+                                status="written",
+                                arena_size=arena_size,
+                                arena_dir=arena_dir,
+                                arena_index=arena_index,
+                                duration_seconds=artifact_seconds,
+                                artifact_paths=_existing_arena_artifact_paths(arena_dir),
+                                summary={
+                                    "visited_bins": arena_summary["visited_bins"],
+                                    "total_bins": arena_summary["total_bins"],
+                                    "coverage_fraction": arena_summary["coverage_fraction"],
+                                    "active_units": arena_summary["active_units"],
+                                    "detected_modules": arena_summary["detected_modules"],
+                                },
+                            )
                         summary_rows.append(arena_summary)
                         logger.info(
                             "arena evaluation finished arena_size=%s coverage=%s active_units=%s",
@@ -1127,6 +1183,41 @@ def _write_arena_artifacts(
 def _write_json(path: Path, data: object) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, sort_keys=True, allow_nan=False)
+
+
+def _existing_arena_artifact_paths(arena_dir: Path) -> list[str]:
+    artifact_names = [
+        "rollout_arrays.npz",
+        "ratemaps.npz",
+        "occupancy.npz",
+        "sacs.npz",
+        "grid_metrics.npz",
+        "ratemaps.pdf",
+        "sacs.pdf",
+        "summary.png",
+        "grid_score_60_histogram.png",
+        "scale_meters_histogram.png",
+        "grid_stats.csv",
+        "grid_stats.json",
+        "module_summary.csv",
+        "module_summary.json",
+        "trajectory_stats.json",
+        "pairwise_distance_stats.csv",
+        "pairwise_distance_stats.json",
+        "pairwise_distance.png",
+        "fourier_stats.csv",
+        "fourier_stats.json",
+        "phase_summary.csv",
+        "phase_summary.json",
+        "state_space_summary.csv",
+        "state_space_summary.json",
+        "state_space_modules.npz",
+    ]
+    return [
+        str(arena_dir / name)
+        for name in artifact_names
+        if (arena_dir / name).exists()
+    ]
 
 
 def _write_csv(path: Path, rows: list[dict[str, object]], fieldnames: list[str]) -> None:

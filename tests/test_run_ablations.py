@@ -35,6 +35,7 @@ def test_repo_ablation_config_materializes_valid_training_configs(tmp_path: Path
         assert cfg.data.batch_size == 16
         assert cfg.data.trajectory_length == 30
         assert cfg.model.n_units == 64
+        assert cfg.logging.detail_level == "detailed"
     assert load_config(tmp_path / "configs" / "no_capacity.yaml").loss.lambda_cap == 0.0
     assert load_config(tmp_path / "configs" / "reduced_sigma_g.yaml").loss.sigma_g == 0.2
     assert load_config(tmp_path / "configs" / "no_separation.yaml").loss.lambda_sep == 0.0
@@ -107,6 +108,11 @@ def test_run_ablations_invokes_train_for_enabled_variants(
     assert (tmp_path / "runs" / "ablation_events.jsonl").exists()
     events = _load_jsonl(tmp_path / "runs" / "ablation_events.jsonl")
     assert {"ablation_start", "variant_validated", "variant_finished", "ablation_summary_written", "ablation_finished"} <= {row["event"] for row in events}
+    assert {
+        "variant_config_materialized",
+        "variant_resume_decision",
+        "variant_train_finished",
+    } <= {row["event"] for row in events}
 
 
 def test_run_ablations_skip_completed_variants(
@@ -394,6 +400,47 @@ def test_run_ablations_can_evaluate_and_summarize_finished_runs(
     events = _load_jsonl(tmp_path / "runs" / "ablation_events.jsonl")
     assert {"variant_train_start", "variant_eval_start", "variant_eval_finished", "variant_finished"} <= {row["event"] for row in events}
     assert any(row.get("resume_checkpoint") is None for row in events if row["event"] == "variant_train_start")
+    eval_finished = next(row for row in events if row["event"] == "variant_eval_finished")
+    assert "duration_seconds" in eval_finished
+
+
+def test_run_ablations_standard_logging_suppresses_detailed_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _tiny_base_config(tmp_path / "base")
+    base["logging"] = {"detail_level": "standard"}
+    ablation_path = tmp_path / "ablations-standard.yaml"
+    ablation_path.write_text(
+        yaml.safe_dump(
+            {
+                "output_root": str(tmp_path / "runs-standard"),
+                "config_dir": str(tmp_path / "configs-standard"),
+                "base": base,
+                "variants": [{"name": "baseline", "overrides": {}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_train(config_path: str | Path, **kwargs) -> RunResult:
+        cfg = load_config(config_path)
+        return RunResult(
+            output_dir=Path(cfg.output_dir),
+            final_step=cfg.train.max_optimizer_steps,
+            checkpoint_path=Path(cfg.output_dir) / "checkpoints" / "step_1.pt",
+        )
+
+    monkeypatch.setattr(run_ablations_script, "train", fake_train)
+
+    run_ablations_script.run_ablations(ablation_path)
+
+    events = _load_jsonl(tmp_path / "runs-standard" / "ablation_events.jsonl")
+    event_names = {row["event"] for row in events}
+    assert "variant_finished" in event_names
+    assert "variant_config_materialized" not in event_names
+    assert "variant_resume_decision" not in event_names
+    assert "variant_train_finished" not in event_names
 
 
 def test_run_ablations_records_failed_variants_with_errors(
@@ -460,6 +507,8 @@ def test_failed_variant_duration_uses_variant_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    base = _tiny_base_config(tmp_path / "base")
+    base["logging"] = {"detail_level": "standard"}
     ablation_path = tmp_path / "ablations.yaml"
     ablation_path.write_text(
         yaml.safe_dump(
@@ -467,7 +516,7 @@ def test_failed_variant_duration_uses_variant_start(
                 "output_root": str(tmp_path / "runs"),
                 "config_dir": str(tmp_path / "configs"),
                 "continue_on_error": True,
-                "base": _tiny_base_config(tmp_path / "base"),
+                "base": base,
                 "variants": [
                     {"name": "baseline", "overrides": {}},
                     {"name": "failing", "overrides": {}},
@@ -528,6 +577,18 @@ def test_unknown_nested_ablation_override_key_fails(tmp_path: Path) -> None:
         run_ablations_script.materialize_run_configs(plan)
 
 
+def test_unknown_nested_logging_ablation_override_key_fails(tmp_path: Path) -> None:
+    plan = {
+        "output_root": str(tmp_path / "runs"),
+        "config_dir": str(tmp_path / "configs"),
+        "base": _tiny_base_config(tmp_path / "base"),
+        "variants": [{"name": "bad", "overrides": {"logging": {"verbose": True}}}],
+    }
+
+    with pytest.raises(ValueError, match="Unknown ablation override key: logging.verbose"):
+        run_ablations_script.materialize_run_configs(plan)
+
+
 def _tiny_base_config(output_dir: Path) -> dict:
     return {
         "seed": 0,
@@ -574,6 +635,7 @@ def _tiny_base_config(output_dir: Path) -> dict:
             "checkpoint_every": 1,
             "log_every": 1,
         },
+        "logging": {"detail_level": "detailed"},
     }
 
 

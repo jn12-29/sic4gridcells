@@ -80,6 +80,7 @@ def test_train_smoke_writes_outputs(tmp_path: Path) -> None:
     assert checkpoint["step"] == 2
     assert latest_checkpoint["step"] == 2
     assert checkpoint["config"]["train"]["max_optimizer_steps"] == 2
+    assert checkpoint["config"]["logging"]["detail_level"] == "detailed"
     assert "model_state_dict" in checkpoint
     manifest = json.loads(
         (output_dir / "checkpoints" / "checkpoint_manifest.json").read_text(encoding="utf-8")
@@ -131,6 +132,27 @@ def test_train_logs_on_requested_cadence(tmp_path: Path) -> None:
     event_rows = _load_jsonl(output_dir / "train_events.jsonl")
     assert [row["step"] for row in metric_rows] == [1.0, 2.0, 4.0, 5.0]
     assert [row["step"] for row in event_rows if row["event"] == "train_metrics"] == [1, 2, 4, 5]
+    assert [row["step"] for row in event_rows if row["event"] == "train_step_summary"] == [1, 2, 4, 5]
+
+
+def test_train_standard_logging_suppresses_detailed_events(tmp_path: Path) -> None:
+    config_path = tmp_path / "standard-logging.yaml"
+    output_dir = tmp_path / "standard-logging-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=2)
+    config["logging"] = {"detail_level": "standard"}
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    train(config_path, overwrite_output=True)
+
+    event_rows = _load_jsonl(output_dir / "train_events.jsonl")
+    event_names = {row["event"] for row in event_rows}
+    assert "train_metrics" in event_names
+    assert "train_model_built" not in event_names
+    assert "train_optimizer_built" not in event_names
+    assert "train_step_summary" not in event_names
+    checkpoint_events = [row for row in event_rows if row["event"] == "checkpoint_saved"]
+    assert checkpoint_events
+    assert all("checkpoint_size_bytes" not in row for row in checkpoint_events)
 
 
 def test_train_scheduler_none_keeps_lr_constant(tmp_path: Path) -> None:
@@ -337,6 +359,63 @@ def test_train_can_resume_from_checkpoint_to_larger_max_step(tmp_path: Path) -> 
     checkpoint = torch.load(resumed_result.checkpoint_path, map_location="cpu")
     assert checkpoint["step"] == 3
     assert "generator_state" in checkpoint
+
+
+def test_resume_allows_logging_detail_level_change(tmp_path: Path) -> None:
+    config_path = tmp_path / "resume-logging.yaml"
+    output_dir = tmp_path / "resume-logging-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=1)
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    first_result = train(config_path)
+
+    config["train"]["max_optimizer_steps"] = 2
+    config["logging"] = {"detail_level": "standard"}
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    resumed_result = train(config_path, resume_checkpoint=first_result.checkpoint_path)
+
+    assert resumed_result.final_step == 2
+    events = _load_jsonl(output_dir / "train_events.jsonl")
+    assert any(row["event"] == "train_resume_loaded" for row in events)
+    assert all(row["event"] != "train_step_summary" for row in events if row.get("step") == 2)
+
+
+def test_resume_accepts_old_checkpoint_missing_logging(tmp_path: Path) -> None:
+    config_path = tmp_path / "resume-old.yaml"
+    output_dir = tmp_path / "resume-old-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=1)
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    first_result = train(config_path)
+    checkpoint = torch.load(first_result.checkpoint_path, map_location="cpu")
+    del checkpoint["config"]["logging"]
+    old_checkpoint_path = output_dir / "checkpoints" / "old_without_logging.pt"
+    torch.save(checkpoint, old_checkpoint_path)
+
+    config["train"]["max_optimizer_steps"] = 2
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    resumed_result = train(config_path, resume_checkpoint=old_checkpoint_path)
+
+    assert resumed_result.final_step == 2
+
+
+def test_resume_still_rejects_non_logging_missing_checkpoint_config_fields(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "resume-missing-field.yaml"
+    output_dir = tmp_path / "resume-missing-field-run"
+    config = _tiny_training_config(output_dir, max_optimizer_steps=1)
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    first_result = train(config_path)
+    checkpoint = torch.load(first_result.checkpoint_path, map_location="cpu")
+    del checkpoint["config"]["model"]["n_units"]
+    bad_checkpoint_path = output_dir / "checkpoints" / "missing_model_n_units.pt"
+    torch.save(checkpoint, bad_checkpoint_path)
+
+    config["train"]["max_optimizer_steps"] = 2
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="model.n_units"):
+        train(config_path, resume_checkpoint=bad_checkpoint_path)
 
 
 def test_cosine_resume_to_larger_max_step_does_not_raise_lr(

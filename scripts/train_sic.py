@@ -16,7 +16,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True, help="Path to a YAML config file.")
     parser.add_argument(
         "--resume",
-        help="Path to a checkpoint to resume from. Only train.max_optimizer_steps may differ.",
+        help=(
+            "Path to a checkpoint to resume from. Only train.max_optimizer_steps "
+            "and logging.detail_level may differ."
+        ),
     )
     parser.add_argument(
         "--overwrite-output",

@@ -16,6 +16,7 @@ def test_load_smoke_config() -> None:
     assert cfg.model.initial_position_encoding == "none"
     assert cfg.loss.pairwise_reduction == "mean"
     assert cfg.train.max_optimizer_steps == 10
+    assert cfg.logging.detail_level == "detailed"
 
 
 def test_load_paper_config_records_assumptions() -> None:
@@ -42,6 +43,33 @@ def test_unknown_config_key_fails(tmp_path: Path) -> None:
     path = tmp_path / "bad.yaml"
     path.write_text("unknown: true\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Unknown config key"):
+        load_config(path)
+
+
+def test_logging_detail_level_defaults_to_detailed() -> None:
+    assert Config().logging.detail_level == "detailed"
+    assert load_config().logging.detail_level == "detailed"
+
+
+def test_logging_detail_level_standard_loads(tmp_path: Path) -> None:
+    path = tmp_path / "standard-logging.yaml"
+    path.write_text(
+        yaml.safe_dump({"logging": {"detail_level": "standard"}}),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(path)
+
+    assert cfg.logging.detail_level == "standard"
+
+
+def test_invalid_logging_detail_level_fails(tmp_path: Path) -> None:
+    path = tmp_path / "bad-logging.yaml"
+    path.write_text(
+        yaml.safe_dump({"logging": {"detail_level": "verbose"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="logging.detail_level"):
         load_config(path)
 
 
@@ -124,4 +152,5 @@ def test_save_effective_config_roundtrip(tmp_path: Path) -> None:
     save_effective_config(cfg, output)
     loaded = yaml.safe_load(output.read_text(encoding="utf-8"))
     assert loaded["data"]["batch_size"] == 130
+    assert loaded["logging"]["detail_level"] == "detailed"
     assert "assumptions" in loaded

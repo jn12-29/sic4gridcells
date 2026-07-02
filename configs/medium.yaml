@@ -38,3 +38,6 @@ train:
   max_optimizer_steps: 5000
   checkpoint_every: 500
   log_every: 10
+
+logging:
+  detail_level: detailed

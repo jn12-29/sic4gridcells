@@ -40,7 +40,7 @@ finished step=10 output_dir=results/smoke
 checkpoint=results/smoke/checkpoints/step_10.pt
 ```
 
-The CLI also accepts `--log-level` for stderr logging; runtime logs are written to `results/smoke/run.log` and structured events to `results/smoke/train_events.jsonl`.
+The CLI also accepts `--log-level` for stderr logging; runtime logs are written to `results/smoke/run.log` and structured events to `results/smoke/train_events.jsonl`. File and event detail is controlled by `logging.detail_level` in the training config; `detailed` is the default, while `standard` keeps the coarse lifecycle events and filenames.
 
 The smoke run writes:
 
@@ -57,7 +57,8 @@ The smoke run writes:
 `results/` is ignored by git.
 
 Resume an interrupted run with the same config. To extend beyond the
-checkpoint config, change only `train.max_optimizer_steps`:
+checkpoint config, change only `train.max_optimizer_steps` or
+`logging.detail_level`:
 
 ```bash
 uv run python scripts/train_sic.py --config configs/medium.yaml --resume results/medium/checkpoints/step_500.pt
@@ -93,6 +94,7 @@ Evaluation defaults to `--start-mode origin`, which keeps reset model state alig
 Evaluation also defaults to `--trajectory-mode reflect` for backward-compatible bounded walks. Use `--trajectory-mode smooth_avoid_walls` for smoother wall-avoiding diagnostic trajectories.
 
 The evaluation CLI also accepts `--log-level`; runtime logs go to `run.log` and structured events go to `eval_events.jsonl` beside the evaluation summary.
+Evaluation uses the checkpoint config's `logging.detail_level` for structured event detail.
 Evaluation also refuses to reuse an existing output directory unless
 `--overwrite-output` is passed.
 

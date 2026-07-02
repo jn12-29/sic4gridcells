@@ -64,10 +64,19 @@ def test_paper_suite_materializes_overrides_and_rejects_unknown_keys(tmp_path: P
     cfg = load_config(runs[0].config_path)
     assert cfg.seed == 4
     assert cfg.model.n_units == 6
+    assert cfg.logging.detail_level == "detailed"
     assert cfg.output_dir == str(tmp_path / "paper_suite" / "smoke" / "runs" / "baseline" / "train")
+
+    plan["runs"][0]["overrides"] = {"logging": {"detail_level": "standard"}}
+    runs = materialize_paper_suite_configs(plan)
+    assert load_config(runs[0].config_path).logging.detail_level == "standard"
 
     plan["runs"][0]["overrides"] = {"bad": True}
     with pytest.raises(ValueError, match="Unknown paper suite override key: bad"):
+        materialize_paper_suite_configs(plan)
+
+    plan["runs"][0]["overrides"] = {"logging": {"verbose": True}}
+    with pytest.raises(ValueError, match="Unknown paper suite override key: logging.verbose"):
         materialize_paper_suite_configs(plan)
 
 
@@ -134,6 +143,41 @@ def test_paper_suite_real_execution_calls_pipeline_functions(
     manifest = json.loads((suite_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["runs"][0]["validation_passed"] is True
     assert manifest["runs"][0]["analysis_output_dir"].endswith("/analysis")
+    events = _load_jsonl(suite_dir / "paper_suite_events.jsonl")
+    stage_pairs = {
+        (row["event"], row.get("stage"))
+        for row in events
+        if row["event"].startswith("paper_suite_stage_")
+    }
+    for stage in ("profile", "train", "eval", "validation", "analysis"):
+        assert ("paper_suite_stage_start", stage) in stage_pairs
+        assert ("paper_suite_stage_finished", stage) in stage_pairs
+
+
+def test_paper_suite_standard_logging_suppresses_stage_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suite_config = _write_suite_config(tmp_path, logging_detail_level="standard")
+
+    def fake_train(config_path: str | Path, **kwargs) -> RunResult:
+        cfg = load_config(config_path)
+        checkpoint = Path(cfg.output_dir) / "checkpoints" / "step_1.pt"
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.write_bytes(b"checkpoint")
+        return RunResult(
+            output_dir=Path(cfg.output_dir),
+            final_step=1,
+            checkpoint_path=checkpoint,
+        )
+
+    monkeypatch.setattr("sic4gridcells.paper_suite.train", fake_train)
+
+    run_paper_suite(suite_config)
+
+    events = _load_jsonl(tmp_path / "paper_suite" / "smoke" / "paper_suite_events.jsonl")
+    assert "paper_suite_run_finished" in {row["event"] for row in events}
+    assert all(not row["event"].startswith("paper_suite_stage_") for row in events)
 
 
 def test_paper_suite_does_not_build_figures_after_validation_failure(
@@ -277,6 +321,17 @@ def test_paper_suite_skip_completed_reuses_existing_analysis_for_figures(
     )
     assert manifest["runs"][0]["analysis_output_dir"] == str(analysis_dir)
     assert manifest["figure_output_dir"] == str(tmp_path / "paper_suite" / "smoke" / "figures")
+    events = _load_jsonl(tmp_path / "paper_suite" / "smoke" / "paper_suite_events.jsonl")
+    figure_events = [
+        row
+        for row in events
+        if row["event"].startswith("paper_suite_stage_") and row.get("stage") == "figure"
+    ]
+    assert {row["event"] for row in figure_events} == {
+        "paper_suite_stage_start",
+        "paper_suite_stage_finished",
+    }
+    assert figure_events[0]["name"] is None
 
 
 def test_run_paper_suite_cli_prints_validated_runs(
@@ -317,8 +372,9 @@ def _write_suite_config(
     analysis_enabled: bool = False,
     figures_enabled: bool = False,
     continue_on_error: bool = False,
+    logging_detail_level: str = "detailed",
 ) -> Path:
-    source_config = _write_training_config(tmp_path)
+    source_config = _write_training_config(tmp_path, logging_detail_level=logging_detail_level)
     suite_config = tmp_path / "paper_suite.yaml"
     suite_config.write_text(
         yaml.safe_dump(
@@ -371,7 +427,11 @@ def _write_suite_config(
     return suite_config
 
 
-def _write_training_config(tmp_path: Path) -> Path:
+def _write_training_config(
+    tmp_path: Path,
+    *,
+    logging_detail_level: str = "detailed",
+) -> Path:
     config_path = tmp_path / "train.yaml"
     config = {
         "seed": 0,
@@ -418,9 +478,21 @@ def _write_training_config(tmp_path: Path) -> Path:
             "checkpoint_every": 1,
             "log_every": 1,
         },
+        "logging": {"detail_level": logging_detail_level},
     }
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     return config_path
+
+
+def _load_jsonl(path: Path) -> list[dict]:
+    raw = path.read_text(encoding="utf-8")
+    assert "NaN" not in raw
+    assert "Infinity" not in raw
+    return [
+        json.loads(line, parse_constant=_fail_parse_constant)
+        for line in raw.splitlines()
+        if line.strip()
+    ]
 
 
 def _fail_parse_constant(value: str) -> None:

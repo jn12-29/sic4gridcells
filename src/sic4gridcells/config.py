@@ -59,6 +59,11 @@ class TrainConfig:
     log_every: int = 10
 
 
+@dataclass
+class LoggingConfig:
+    detail_level: str = "detailed"
+
+
 DEFAULT_ASSUMPTIONS = [
     "loss.lambda_coniso defaults to 1.0 because the paper appendix table omits it.",
     "model.mlp_hidden_width defaults to 256 because the paper source omits it.",
@@ -78,6 +83,7 @@ VALID_SCHEDULER_MONITORS = {
     "loss/capacity",
     "loss/conformal_isometry",
 }
+VALID_LOG_DETAIL_LEVELS = {"standard", "detailed"}
 
 
 @dataclass
@@ -89,6 +95,7 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     assumptions: list[str] = field(default_factory=lambda: list(DEFAULT_ASSUMPTIONS))
 
 
@@ -201,6 +208,8 @@ def validate_config(cfg: Config) -> None:
         raise ValueError("train.checkpoint_every must be positive")
     if cfg.train.log_every <= 0:
         raise ValueError("train.log_every must be positive")
+    if cfg.logging.detail_level not in VALID_LOG_DETAIL_LEVELS:
+        raise ValueError("logging.detail_level must be 'standard' or 'detailed'")
 
 
 def _deep_update(base: dict[str, Any], updates: dict[str, Any]) -> None:
@@ -222,6 +231,7 @@ def _config_from_dict(data: dict[str, Any]) -> Config:
         model=_dataclass_from_dict(ModelConfig, data["model"]),
         loss=_dataclass_from_dict(LossConfig, data["loss"]),
         train=_dataclass_from_dict(TrainConfig, data["train"]),
+        logging=_dataclass_from_dict(LoggingConfig, data["logging"]),
         assumptions=[str(item) for item in data["assumptions"]],
     )
 

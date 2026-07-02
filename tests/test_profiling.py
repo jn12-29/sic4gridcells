@@ -42,7 +42,27 @@ def test_profile_training_run_writes_summary(tmp_path: Path) -> None:
     assert payload["final_step"] == 2
     assert payload["last_metrics"]["perf/step_seconds"] > 0
     effective = yaml.safe_load((output_dir / "config.yaml").read_text(encoding="utf-8"))
+    assert effective["device"] == "cpu"
     assert effective["train"]["max_optimizer_steps"] == 2
+    assert effective["train"]["checkpoint_every"] == 2
+    assert effective["train"]["log_every"] == 1
+    assert effective["logging"]["detail_level"] == "detailed"
+
+
+def test_profile_training_run_preserves_logging_detail_level(tmp_path: Path) -> None:
+    config_path = _write_profile_config(tmp_path, logging_detail_level="standard")
+    output_dir = tmp_path / "profile-standard"
+
+    profile_training_run(
+        config_path,
+        output_dir,
+        steps=1,
+        device="cpu",
+    )
+
+    effective = yaml.safe_load((output_dir / "config.yaml").read_text(encoding="utf-8"))
+    assert effective["logging"]["detail_level"] == "standard"
+    assert effective["train"]["log_every"] == 1
 
 
 def test_summarize_profile_run_handles_missing_metrics(tmp_path: Path) -> None:
@@ -125,6 +145,7 @@ def _write_profile_config(
     *,
     max_optimizer_steps: int = 4,
     checkpoint_every: int = 2,
+    logging_detail_level: str = "detailed",
 ) -> Path:
     config_path = tmp_path / "profile.yaml"
     config = {
@@ -172,6 +193,7 @@ def _write_profile_config(
             "checkpoint_every": checkpoint_every,
             "log_every": 1,
         },
+        "logging": {"detail_level": logging_detail_level},
     }
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     return config_path

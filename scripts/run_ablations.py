@@ -192,6 +192,16 @@ def run_ablations(
                         name=run.name,
                         config_path=run.config_path,
                     )
+                    detailed_logging = cfg.logging.detail_level == "detailed"
+                    if detailed_logging:
+                        events.emit(
+                            "variant_config_materialized",
+                            status="written",
+                            name=run.name,
+                            config_path=run.config_path,
+                            output_dir=cfg.output_dir,
+                            logging_detail_level=cfg.logging.detail_level,
+                        )
                     if dry_run:
                         results[run.name] = AblationResult(
                             status="validated",
@@ -227,6 +237,15 @@ def run_ablations(
                         latest = discover_latest_checkpoint(cfg.output_dir)
                         if latest is not None:
                             resume_checkpoint = latest.path
+                    if detailed_logging:
+                        events.emit(
+                            "variant_resume_decision",
+                            status="selected",
+                            name=run.name,
+                            output_dir=cfg.output_dir,
+                            resume_existing=resume_existing,
+                            resume_checkpoint=resume_checkpoint,
+                        )
                     logger.info("variant training started name=%s", run.name)
                     events.emit(
                         "variant_train_start",
@@ -240,7 +259,18 @@ def run_ablations(
                         train_kwargs["resume_checkpoint"] = resume_checkpoint
                     if overwrite_output and resume_checkpoint is None:
                         train_kwargs["overwrite_output"] = True
+                    train_start = time.perf_counter() if detailed_logging else None
                     run_result = train(run.config_path, **train_kwargs)
+                    if train_start is not None:
+                        events.emit(
+                            "variant_train_finished",
+                            status="finished",
+                            name=run.name,
+                            output_dir=run_result.output_dir,
+                            final_step=run_result.final_step,
+                            checkpoint_path=run_result.checkpoint_path,
+                            duration_seconds=elapsed_seconds(train_start),
+                        )
                     evaluation_result = None
                     if evaluation_enabled:
                         logger.info(
@@ -254,6 +284,7 @@ def run_ablations(
                             name=run.name,
                             checkpoint_path=run_result.checkpoint_path,
                         )
+                        eval_start = time.perf_counter() if detailed_logging else None
                         evaluation_result = _evaluate_ablation_run(
                             run_result,
                             evaluation_cfg,
@@ -264,12 +295,16 @@ def run_ablations(
                             run.name,
                             evaluation_result.output_dir,
                         )
-                        events.emit(
-                            "variant_eval_finished",
-                            status="finished",
-                            name=run.name,
-                            evaluation_output_dir=evaluation_result.output_dir,
-                        )
+                        eval_finished_event = {
+                            "status": "finished",
+                            "name": run.name,
+                            "evaluation_output_dir": evaluation_result.output_dir,
+                        }
+                        if eval_start is not None:
+                            eval_finished_event["duration_seconds"] = elapsed_seconds(
+                                eval_start
+                            )
+                        events.emit("variant_eval_finished", **eval_finished_event)
                     results[run.name] = AblationResult(
                         status="finished",
                         config_path=run.config_path,

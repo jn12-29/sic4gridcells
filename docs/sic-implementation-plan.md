@@ -207,12 +207,13 @@ docs/runbook.md
 - `scripts/train_sic.py`、`scripts/eval_checkpoint.py` 和 `scripts/run_ablations.py` 都接受 `--log-level`，用于 stderr 端的标准 logging。
 - 运行时的 human-readable 日志写入各自的 `run.log`。
 - 结构化事件写入各自的 `*_events.jsonl`，行级记录只包含可 JSON 序列化字段，非有限数值会写成 `null`。
+- `logging.detail_level` 控制文件日志和结构化事件详细度，取值为 `standard` 或 `detailed`，默认 `detailed`；`--log-level` 只控制 stderr。
 - resume 时，训练的事件日志会按 checkpoint step 裁剪，和 `metrics.jsonl` 的裁剪逻辑保持一致。
 
 ### Runtime safety and recovery
 
 - Fresh training、evaluation 和 ablation runs 默认拒绝复用非空 output directory；显式 resume 或 `--overwrite-output` 才能复用。
-- Training resume 仍只允许 checkpoint config 与当前 config 在 `train.max_optimizer_steps` 上不同。
+- Training resume 仍只允许 checkpoint config 与当前 config 在 `train.max_optimizer_steps` 和 `logging.detail_level` 上不同。
 - Checkpoint 写入使用 atomic replace；每次 checkpoint 保存同时写 `checkpoints/step_<step>.pt`、`checkpoints/latest.pt` 和 `checkpoints/checkpoint_manifest.json`。
 - Checkpoint 文件必须继续能用默认 `torch.load(path, map_location="cpu")` 加载。
 - Training 在 backward 前检查 floating loss tensors 是否 finite，并在 gradient clipping 时启用 non-finite gradient error。

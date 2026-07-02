@@ -12,7 +12,12 @@ import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
-from sic4gridcells.config import Config, load_config, resolve_device, save_effective_config
+from sic4gridcells.config import (
+    Config,
+    load_config,
+    resolve_device,
+    save_effective_config,
+)
 from sic4gridcells.data import make_sic_batch
 from sic4gridcells.logging_utils import (
     JsonlEventLogger,
@@ -86,6 +91,7 @@ def train_with_config(
     with log_file_context(log_path, logger_names=("sic4gridcells",), mode=log_mode):
         try:
             set_seed(cfg.seed)
+            detailed_logging = cfg.logging.detail_level == "detailed"
             device = resolve_device(cfg.device)
             checkpoint = None
             if resume_path is not None:
@@ -122,6 +128,7 @@ def train_with_config(
                     checkpoint_every=cfg.train.checkpoint_every,
                     resume_checkpoint=resume_path,
                     overwrite_output=overwrite_output,
+                    logging_detail_level=cfg.logging.detail_level,
                 )
                 runtime_snapshot = collect_runtime_snapshot(device, output_dir)
                 events.emit(
@@ -152,12 +159,37 @@ def train_with_config(
                 )
 
                 model = VelocityConditionedRNN(cfg).to(device)
+                if detailed_logging:
+                    events.emit(
+                        "train_model_built",
+                        status="built",
+                        device=str(device),
+                        n_units=cfg.model.n_units,
+                        mlp_layers=cfg.model.mlp_layers,
+                        mlp_hidden_width=cfg.model.mlp_hidden_width,
+                        initial_position_encoding=cfg.model.initial_position_encoding,
+                        trainable_initial_state=cfg.model.trainable_initial_state,
+                        parameter_count=_parameter_count(model),
+                    )
                 optimizer = torch.optim.AdamW(
                     model.parameters(),
                     lr=cfg.train.lr,
                     weight_decay=cfg.train.weight_decay,
                 )
                 scheduler = _build_scheduler(optimizer, cfg)
+                if detailed_logging:
+                    events.emit(
+                        "train_optimizer_built",
+                        status="built",
+                        optimizer=cfg.train.optimizer,
+                        scheduler=cfg.train.scheduler,
+                        scheduler_monitor=cfg.train.scheduler_monitor,
+                        lr=cfg.train.lr,
+                        weight_decay=cfg.train.weight_decay,
+                        grad_clip_norm=cfg.train.grad_clip_norm,
+                        accumulate_grad_batches=cfg.train.accumulate_grad_batches,
+                        param_group_count=len(optimizer.param_groups),
+                    )
                 generator = torch.Generator(device="cpu").manual_seed(cfg.seed)
                 if checkpoint is not None and resume_path is not None:
                     model.load_state_dict(checkpoint["model_state_dict"])
@@ -299,10 +331,19 @@ def train_with_config(
                                     metrics_path=metrics_path,
                                     metrics=log_row,
                                 )
+                                if detailed_logging:
+                                    events.emit(
+                                        "train_step_summary",
+                                        status="written",
+                                        step=step,
+                                        metrics_path=metrics_path,
+                                        summary=_step_summary(log_row),
+                                    )
                             if (
                                 step % cfg.train.checkpoint_every == 0
                                 or step == cfg.train.max_optimizer_steps
                             ):
+                                checkpoint_start = time.perf_counter()
                                 latest_checkpoint = checkpoint_manager.save(
                                     _checkpoint_payload(
                                         step,
@@ -314,19 +355,44 @@ def train_with_config(
                                     ),
                                     step,
                                 )
+                                checkpoint_seconds = elapsed_seconds(checkpoint_start)
                                 logger.info(
                                     "checkpoint saved step=%s path=%s",
                                     step,
                                     latest_checkpoint,
                                 )
-                                events.emit(
-                                    "checkpoint_saved",
-                                    status="written",
-                                    step=step,
-                                    checkpoint_path=latest_checkpoint,
-                                    latest_checkpoint_path=checkpoint_manager.latest_path,
-                                    manifest_path=checkpoint_manager.manifest_path,
-                                )
+                                checkpoint_event = {
+                                    "status": "written",
+                                    "step": step,
+                                    "checkpoint_path": latest_checkpoint,
+                                    "latest_checkpoint_path": checkpoint_manager.latest_path,
+                                    "manifest_path": checkpoint_manager.manifest_path,
+                                }
+                                if detailed_logging:
+                                    checkpoint_event.update(
+                                        {
+                                            "checkpoint_size_bytes": _file_size_bytes(
+                                                latest_checkpoint
+                                            ),
+                                            "latest_checkpoint_size_bytes": _file_size_bytes(
+                                                checkpoint_manager.latest_path
+                                            ),
+                                            "manifest_size_bytes": _file_size_bytes(
+                                                checkpoint_manager.manifest_path
+                                            ),
+                                            "checkpoint_duration_seconds": checkpoint_seconds,
+                                            "training_duration_seconds": elapsed_seconds(
+                                                start_time
+                                            ),
+                                        }
+                                    )
+                                    checkpoint_event.update(
+                                        collect_runtime_snapshot(
+                                            device,
+                                            output_dir,
+                                        ).as_event_fields()
+                                    )
+                                events.emit("checkpoint_saved", **checkpoint_event)
                 except Exception as exc:
                     failure_recorded = True
                     logger.exception("training failed")
@@ -474,6 +540,47 @@ def _checkpoint_payload(
     }
 
 
+def _parameter_count(model: torch.nn.Module) -> int:
+    return sum(parameter.numel() for parameter in model.parameters())
+
+
+def _step_summary(metrics: dict[str, float]) -> dict[str, float | int | None]:
+    keys = [
+        "loss/total",
+        "loss/separation",
+        "loss/invariance",
+        "loss/capacity",
+        "loss/conformal_isometry",
+        "lr",
+        "grad_norm",
+        "perf/step_seconds",
+        "perf/points_per_second",
+        "stats/zero_norm_fraction",
+        "stats/separation_pairs",
+        "stats/invariance_pairs",
+        "stats/conformal_isometry_steps",
+        "disk/output_free_gb",
+    ]
+    summary: dict[str, float | int | None] = {}
+    for key in keys:
+        if key not in metrics:
+            continue
+        value = metrics[key]
+        if isinstance(value, float) and not math.isfinite(value):
+            summary[key] = None
+        elif key.endswith("_pairs") or key.endswith("_steps"):
+            summary[key] = int(value)
+        else:
+            summary[key] = float(value)
+    return summary
+
+
+def _file_size_bytes(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    return path.stat().st_size
+
+
 def _build_scheduler(
     optimizer: torch.optim.Optimizer,
     cfg: Config,
@@ -551,9 +658,10 @@ def _validate_resume_config(
     checkpoint_path: Path,
 ) -> None:
     current = asdict(cfg)
-    expected = json.loads(json.dumps(checkpoint_config))
+    expected = _normalize_checkpoint_config_for_resume(checkpoint_config)
     allowed_differences = {
         ("train", "max_optimizer_steps"),
+        ("logging", "detail_level"),
     }
     differences = _config_differences(current, expected)
     blocking = [
@@ -574,6 +682,15 @@ def _validate_resume_config(
             f"{checkpoint_path}: train.max_optimizer_steps cannot decrease "
             f"from {checkpoint_max_steps} to {current_max_steps}"
         )
+
+
+def _normalize_checkpoint_config_for_resume(checkpoint_config: dict) -> dict:
+    expected = json.loads(json.dumps(checkpoint_config))
+    if not isinstance(expected, dict):
+        raise ValueError("Checkpoint config must be a mapping")
+    if "logging" not in expected:
+        expected["logging"] = asdict(Config().logging)
+    return expected
 
 
 def _config_differences(
